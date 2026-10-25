@@ -1,0 +1,572 @@
+/* Rust-DOS Almanac: a Turbo Vision desktop, as rust-dos.com draws it.
+ *
+ * Everything sits on the 8x16 character grid of the IBM VGA font: 1ch is
+ * one column, 1em one row. Window frames are borders placed where the font
+ * draws its box characters (═ ║ ─ │). Palette, frames, menu bar, status
+ * line and buttons follow rust-dos.com's site.css; the form controls are
+ * Turbo Vision's input lines, list boxes, radio buttons and check boxes. */
+
+@font-face {
+  font-family: "IBM VGA";
+  src: url("/fonts/WebPlus_IBM_VGA_8x16.woff") format("woff");
+  font-display: block;
+}
+
+:root {
+  --fs: 16px;
+  --px: calc(var(--fs) / 16); /* one VGA font pixel */
+
+  /* The 16 colours of the VGA text mode palette. */
+  --black: #000000;
+  --blue: #0000aa;
+  --green: #00aa00;
+  --cyan: #00aaaa;
+  --red: #aa0000;
+  --magenta: #aa00aa;
+  --brown: #aa5500;
+  --lgray: #aaaaaa;
+  --dgray: #555555;
+  --lblue: #5555ff;
+  --lgreen: #55ff55;
+  --lcyan: #55ffff;
+  --lred: #ff5555;
+  --lmagenta: #ff55ff;
+  --yellow: #ffff55;
+  --white: #ffffff;
+
+  --shadow: rgba(0, 0, 0, 0.62);
+  color-scheme: dark;
+  scrollbar-color: var(--blue) var(--cyan);
+}
+
+@media (min-width: 1760px) { :root { --fs: 20px; } }
+@media (min-width: 2400px) { :root { --fs: 24px; } }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  font-size: var(--fs);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font: 1rem/1 "IBM VGA", monospace;
+  color: var(--lgray);
+  /* Turbo Vision's desktop: the ░ character, blue on light gray. */
+  background: var(--lgray) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='2' shape-rendering='crispEdges'%3E%3Cpath fill='%230000aa' d='M3 0h1v1H3zM1 1h1v1H1z'/%3E%3C/svg%3E") 0 0 / calc(var(--px) * 4) calc(var(--px) * 2);
+  -webkit-font-smoothing: none;
+}
+
+h1, h2, h3, p, ul, ol, dl, dd, pre, form, fieldset, figure { margin: 0; padding: 0; }
+h1, h2, h3, b, strong, legend { font: inherit; }
+ul, ol { list-style: none; }
+a { color: inherit; }
+kbd, code, pre, input, select, textarea, button { font: inherit; }
+button {
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+}
+:focus { outline: none; }
+::selection { background: var(--cyan); color: var(--black); }
+fieldset { border: 0; min-width: 0; }
+
+.hk { color: var(--red); }
+.muted { color: var(--cyan); }
+.small { font-size: inherit; }
+.center { text-align: center; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+
+.cursor { animation: blink 0.46s steps(1) infinite; }
+@keyframes blink { 50% { visibility: hidden; } }
+
+
+/* ─── Menu bar and status line ─────────────────────────────────────── */
+
+.menubar, .statusline {
+  position: fixed;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  height: 1em;
+  display: flex;
+  justify-content: space-between;
+  background: var(--lgray);
+  color: var(--black);
+  white-space: nowrap;
+}
+.menubar { top: 0; }
+.statusline { bottom: 0; overflow: hidden; }
+
+.mb { display: flex; padding-left: 1ch; min-width: 0; }
+.mb-right { padding: 0 1ch 0 0; }
+.mb-title {
+  display: block;
+  height: 1em;
+  padding: 0 1ch;
+  text-decoration: none;
+}
+.mb-title[aria-current="page"],
+.mb-title:hover,
+.mb-title:focus-visible { background: var(--green); }
+.mb-user { padding: 0 1ch; color: var(--blue); }
+.mb-inline { display: contents; }
+
+.sl-items { display: flex; padding-left: 1ch; }
+.sl-items > * { padding: 0 1ch; height: 1em; text-decoration: none; }
+.sl-items > a:hover,
+.sl-items > a:focus-visible { background: var(--green); }
+.sl-hint { padding: 0 1ch; overflow: hidden; }
+.sl-hint:not(:empty)::before { content: "│ "; }
+
+
+/* ─── Window frames ─────────────────────────────────────────────────── */
+
+.win { position: relative; min-width: 0; }
+
+.win::before, .win::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  border: solid var(--frame);
+  border-width: var(--px) calc(var(--px) * 2);
+}
+/* ╔═╗ double frame: the outer and inner lines of ═ and ║ */
+.win::before { inset: calc(var(--px) * 5) var(--px) calc(var(--px) * 8) calc(var(--px) * 2); }
+.win::after { inset: calc(var(--px) * 7) calc(var(--px) * 4) calc(var(--px) * 10) calc(var(--px) * 5); }
+
+.win {
+  --bg: var(--blue);
+  --frame: var(--white);
+  background: var(--bg);
+  color: var(--lgray);
+  padding: 1em 1ch;
+  box-shadow: 2ch 1em 0 var(--shadow);
+  scroll-margin: 3em 0 2em;
+}
+
+/* Gray dialogs, black on gray, for forms. */
+.win.dialog {
+  --bg: var(--lgray);
+  --frame: var(--white);
+  color: var(--black);
+}
+
+.win-title {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: fit-content;
+  max-width: calc(100% - 8ch);
+  margin: 0 auto;
+  padding: 0 1ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  background: var(--bg);
+  color: var(--frame);
+}
+
+.win-body {
+  padding: 1em 2ch;
+  display: grid;
+  gap: 1em;
+  min-width: 0;
+  line-height: 1;
+}
+
+.win a:hover, .win a:focus-visible { color: var(--white); }
+.win.dialog a:not(.btn) { color: var(--blue); }
+.win.dialog a:not(.btn):hover { color: var(--white); }
+
+
+/* ─── Buttons ───────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-block;
+  height: 1em;
+  padding: 0 2ch;
+  background: var(--green);
+  color: var(--black);
+  text-decoration: none;
+  white-space: pre;
+  /* The ▄ and ▀ shadow Turbo Vision draws right of and below a button. */
+  box-shadow: 1ch calc(var(--px) * 7) 0 var(--black);
+  cursor: pointer;
+  list-style: none;
+}
+.btn::-webkit-details-marker { display: none; }
+.btn .hk { color: var(--yellow); }
+.btn.is-default { color: var(--lcyan); }
+.btn:hover, .btn:focus-visible { color: var(--white); }
+.btn:active { transform: translateX(1ch); box-shadow: none; }
+.btn.small { padding: 0 1ch; }
+.win .btn:hover, .win .btn:focus-visible { color: var(--white); }
+
+.buttons, .form-buttons, .pager, .staff-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1em 3ch;
+  padding-bottom: calc(var(--px) * 7);
+}
+.form-buttons { justify-content: center; padding-top: 1em; }
+.pager:empty { display: none; }
+
+
+/* ─── Desktop layout ────────────────────────────────────────────────── */
+
+.desktop { padding: 3em 2ch 4em; }
+
+.deskgrid {
+  container: desk / inline-size;
+  max-width: 148ch;
+  margin: 0 auto;
+  display: grid;
+  gap: 3em 4ch;
+}
+
+.row-top, .row-2, .row-form { display: grid; gap: 3em 4ch; min-width: 0; }
+
+@container desk (min-width: 110ch) {
+  .row-top { grid-template-columns: minmax(0, 1fr) minmax(0, 52ch); }
+  .row-2 { grid-template-columns: minmax(0, 60ch) minmax(0, 1fr); align-items: start; }
+  .row-form { grid-template-columns: minmax(0, 1fr) minmax(0, 44ch); align-items: start; }
+}
+.narrow-form, .row-form.narrow-form { grid-template-columns: minmax(0, 52ch); justify-content: center; }
+.win.narrow { justify-self: center; width: 100%; max-width: 52ch; }
+
+
+/* ─── Home ──────────────────────────────────────────────────────────── */
+
+.hero .hero-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2em;
+  padding: 1em 0;
+  text-align: center;
+}
+.logo {
+  color: var(--yellow);
+  text-shadow: calc(var(--px) * 2) calc(var(--px) * 2) 0 var(--black);
+  font-size: 2rem;
+  line-height: 1;
+}
+.tagline { color: var(--white); line-height: 1; }
+.buttons { justify-content: center; }
+
+.search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 1em 1ch;
+  width: 100%;
+  max-width: 60ch;
+}
+.search .input { flex: 1 1 20ch; min-width: 0; }
+
+.legend { display: grid; gap: 1em; }
+
+/* The front page's traffic light: a gray housing on its pole. */
+.traffic-light {
+  justify-self: center;
+  line-height: 1;
+  white-space: pre;
+  color: var(--white);
+}
+.tl-frame { color: var(--lgray); }
+.tl-name { color: inherit; }
+.tl-text { color: var(--white); }
+.traffic-light .light-green { color: var(--lgreen); }
+.traffic-light .light-yellow { color: var(--yellow); }
+.traffic-light .light-red { color: var(--lred); }
+.legend-win p { line-height: 1; }
+
+.empty { padding: 1em 0; }
+/* While a new search loads, the old results stay, dimmed. */
+.results-body { display: grid; gap: 1em; transition: opacity .15s; }
+.results-body.is-pending { opacity: 0.6; }
+.loading { color: var(--black); background: var(--lgray); padding: 0 1ch; justify-self: start; }
+
+
+/* ─── Stoplight ─────────────────────────────────────────────────────── */
+
+.lamp-wrap { white-space: nowrap; }
+.light-green { color: var(--lgreen); }
+.light-yellow { color: var(--yellow); }
+.light-red { color: var(--lred); }
+.light-none { color: var(--dgray); }
+.lamp-text { margin-left: 1ch; color: var(--white); }
+.dialog .lamp-text { color: var(--black); }
+.rating-bar { display: inline-flex; flex-wrap: wrap; gap: 0 3ch; }
+.counts { display: inline-flex; gap: 2ch; white-space: nowrap; }
+.c-green { color: var(--lgreen); }
+.c-yellow { color: var(--yellow); }
+.c-red { color: var(--lred); }
+/* On cyan list boxes the bright lamps would wash out. */
+.list .light-green, .list .c-green { color: var(--green); }
+.list .light-yellow, .list .c-yellow { color: var(--brown); }
+.list .light-red, .list .c-red { color: var(--red); }
+.list .light-none { color: var(--dgray); }
+
+.badge {
+  display: inline-block;
+  margin-left: 1ch;
+  padding: 0 1ch;
+  background: var(--magenta);
+  color: var(--white);
+}
+.badge.star { background: var(--brown); color: var(--yellow); }
+
+
+/* ─── List boxes ────────────────────────────────────────────────────── */
+
+/* Black on cyan, as Turbo Vision's list viewers; the header as its labels. */
+.list {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--cyan);
+  color: var(--black);
+  line-height: 1;
+}
+.list th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--white);
+  background: var(--cyan);
+  padding: 0 1ch;
+  white-space: nowrap;
+}
+.list td { padding: 0 1ch; vertical-align: top; }
+.list tbody tr:hover, .list tbody tr:focus-within { background: var(--green); }
+.list a { color: var(--black); text-decoration: none; }
+.list a:hover, .list a:focus-visible { color: var(--white); }
+.list .num { text-align: right; }
+.list .key, .chips .key { color: var(--blue); }
+.list .val { color: var(--black); }
+.list tr.is-hidden { color: var(--dgray); }
+.list .lamp-col { width: 3ch; }
+.games .name { width: 40%; }
+.hash { overflow-wrap: anywhere; }
+.scroll-x { overflow-x: auto; max-width: 100%; }
+.files td, .files th { white-space: nowrap; }
+
+/* Narrow screens: each row a block, labelled cell by cell. */
+@container desk (max-width: 80ch) {
+  .games thead, .kv thead { display: none; }
+  .games, .games tbody, .games tr, .games td,
+  .kv, .kv tbody, .kv tr, .kv td { display: block; }
+  .games tr, .kv tr { padding: 0 0 1em; }
+  .games td[data-label]::before, .kv td[data-label="Agree"]::before {
+    content: attr(data-label) ": ";
+    color: var(--blue);
+  }
+  .games td[data-label]:empty { display: none; }
+  .games .lamp-col { float: left; }
+  .games .name { width: auto; }
+  .kv .num { text-align: left; }
+}
+
+
+/* ─── Game page ─────────────────────────────────────────────────────── */
+
+.game-name { color: var(--yellow); line-height: 1; }
+.meta, .aliases { color: var(--lcyan); }
+.head-body { display: grid; gap: 1em; }
+
+.vlist { display: grid; background: var(--cyan); color: var(--black); }
+.vlist li { display: flex; align-items: baseline; justify-content: space-between; padding: 0 1ch; }
+.vlist li.is-sel { background: var(--green); }
+.vlist li.is-sel a { color: var(--white); }
+.vlist a { text-decoration: none; color: var(--black); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vlist li.is-hidden { color: var(--dgray); }
+.vlist .muted { color: var(--blue); }
+.vlist .light-green { color: var(--green); }
+.vlist .light-yellow { color: var(--brown); }
+.vlist .light-red { color: var(--red); }
+
+.source { color: var(--lcyan); }
+.source.blessed { color: var(--yellow); }
+.sub { color: var(--white); }
+
+pre.code {
+  overflow-x: auto;
+  padding: 1em 2ch;
+  background: var(--black);
+  color: var(--lgray);
+  line-height: 1;
+  white-space: pre;
+}
+.ini { color: var(--lgreen); }
+
+.reports { display: grid; gap: 2em; }
+.report { display: grid; gap: 1em; padding-left: 2ch; border-left: calc(var(--px) * 2) solid var(--lblue); }
+.report.is-blessed { border-left-color: var(--yellow); }
+.report.is-hidden { opacity: 0.6; border-left-style: dashed; }
+.report:target { background: rgba(85, 85, 255, 0.25); }
+.report-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 1ch; }
+.report-meta { color: var(--cyan); }
+.report-meta .staff { color: var(--yellow); }
+.description { color: var(--white); white-space: pre-wrap; line-height: 1.25; }
+.source-link { color: var(--lmagenta); text-decoration: none; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 1em 1ch; }
+.chips li { background: var(--cyan); color: var(--black); padding: 0 1ch; white-space: nowrap; }
+.chips .val { color: var(--black); }
+
+.staff-bar { padding-top: 0; }
+.inline { display: inline; }
+details.edit { width: 100%; }
+details.edit[open] > summary { color: var(--white); }
+details.edit > .form {
+  margin-top: 2em;
+  padding: 1em 2ch;
+  background: var(--lgray);
+  color: var(--black);
+  box-shadow: 2ch 1em 0 var(--shadow);
+}
+.users { display: grid; gap: 2em; }
+.users .name { color: var(--white); }
+.users li.is-hidden .name { color: var(--dgray); }
+.ra { overflow-wrap: anywhere; }
+
+
+/* ─── Forms ─────────────────────────────────────────────────────────── */
+
+.form { display: grid; gap: 1em; container: form / inline-size; }
+.form fieldset { display: grid; gap: 1em; }
+.form legend { color: var(--white); padding: 0 1ch 1em 0; }
+.dialog .form legend { color: var(--blue); }
+
+/* A label beside its control where there's room, above it where not.
+   Labels turn white while their control has the focus, as in Turbo Vision. */
+.field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0 2ch;
+  align-items: start;
+}
+@container form (min-width: 56ch) {
+  .field { grid-template-columns: 20ch minmax(0, 1fr); }
+}
+.field label { padding: 0 1ch 0 0; }
+.field:focus-within > label { color: var(--white); }
+.win:not(.dialog) .field:focus-within > label { color: var(--yellow); }
+.hint { color: var(--dgray); line-height: 1.25; }
+.win:not(.dialog) .hint { color: var(--cyan); }
+.field.wide .hint { grid-column: 1 / -1; }
+
+/* Turbo Vision's input line: white on blue, one row high. */
+.input {
+  width: 100%;
+  min-width: 0;
+  height: 1em;
+  padding: 0 1ch;
+  border: 0;
+  border-radius: 0;
+  background: var(--blue);
+  color: var(--white);
+  caret-color: var(--yellow);
+  line-height: 1;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.input::placeholder { color: var(--lblue); }
+.input:focus { background: var(--blue); color: var(--yellow); }
+/* On a blue window the input line is black, so it shows. */
+.win:not(.dialog) .input, .win:not(.dialog) .input:focus { background: var(--black); }
+textarea.input { height: auto; min-height: 4em; resize: vertical; white-space: pre; overflow: auto; }
+.input::-webkit-search-cancel-button { display: none; }
+
+/* A drop-down, with the green [↓] Turbo Vision puts beside a history list. */
+.select { position: relative; display: block; min-width: 0; }
+.select .input { padding-right: 4ch; cursor: pointer; }
+.select::after {
+  content: "↓";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 3ch;
+  height: 1em;
+  text-align: center;
+  pointer-events: none;
+  background: var(--green);
+  color: var(--black);
+}
+.select:focus-within::after { color: var(--white); }
+select.input option { background: var(--cyan); color: var(--black); }
+
+/* ( ) radio buttons and [ ] check boxes, black on cyan clusters. */
+.cluster {
+  padding: 0 1ch;
+  background: var(--cyan);
+  color: var(--black);
+}
+.dialog .stoplight .lamp-text { color: var(--black); }
+.radio, .check { position: relative; display: block; cursor: pointer; }
+.check { display: inline-block; }
+.radio input, .check input { position: absolute; opacity: 0; width: 1ch; height: 1em; margin: 0; }
+.radio > span::before { content: "( ) "; white-space: pre; }
+.radio input:checked + span::before { content: "(•) "; }
+.check > span::before { content: "[ ] "; white-space: pre; }
+.check input:checked + span::before { content: "[X] "; }
+.radio input:focus-visible + span, .check input:focus-visible + span { color: var(--white); }
+.stoplight .light-green { color: var(--green); }
+.stoplight .light-yellow { color: var(--brown); }
+.stoplight .light-red { color: var(--red); }
+
+.settings-grid { display: grid; gap: 2em 4ch; }
+@container form (min-width: 120ch) {
+  .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-grid > :nth-child(3) { grid-column: 1 / -1; }
+}
+.settings { align-content: start; }
+.settings legend .key { color: var(--dgray); }
+
+.error { background: var(--red); color: var(--white); padding: 0 1ch; line-height: 1.25; }
+.error .hk { color: var(--yellow); }
+.ok { color: var(--lgreen); }
+.dialog .ok { color: var(--green); }
+.danger-zone { padding-top: 1em; }
+
+.prose { line-height: 1.25; }
+.prose .win-body { line-height: 1.25; }
+.prose h3 { color: var(--white); }
+.prose b { color: var(--white); }
+.prose a { color: var(--lcyan); }
+
+
+/* ─── Small screens ─────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .sl-hint { display: none; }
+  .menubar { overflow-x: auto; scrollbar-width: none; }
+  .mb-right { padding-right: 0; }
+  .logo { font-size: 1.5rem; }
+}
+
+@media (max-width: 480px) {
+  .desktop { padding-left: 1ch; padding-right: 2ch; }
+  .win { padding: 1em 0; }
+  .win-body { padding: 1em 1ch; }
+  .win::after { display: none; }
+  .mb-user { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor { animation: none; }
+}

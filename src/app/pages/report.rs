@@ -2,30 +2,31 @@ use crate::app::components::{ActionError, Dialog, ErrorLine, Light, Window, erro
 use crate::app::fns::{EditReport, SubmitReport, get_game, get_report};
 use crate::app::use_session;
 use crate::model::{GameDetail, Rating, ReportInfo};
-use crate::settings_schema::{Domain, SECTIONS, SETTINGS, SettingDef};
+use crate::settings_schema::{Domain, GROUPS, SETTINGS, SettingDef};
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_params_map, use_query_map};
 
-const SECTION_TITLES: [(&str, &str); 3] = [("emulator", "Machine"), ("sound", "Sound"), ("joystick", "Input")];
-
 /// The fields of a report, empty or filled from `existing`.
 #[component]
 fn ReportFields(game: GameDetail, version: Option<i64>, existing: Option<ReportInfo>) -> impl IntoView {
     let session = use_session();
+    let version = existing.as_ref().map_or(version, |r| r.version_id);
+    // A new report on a Windows version starts with the built-in Windows on.
+    let windows = match version {
+        Some(v) => game.versions.iter().find(|x| x.id == v).and_then(|x| x.platform).is_some_and(|p| p.is_windows()),
+        None => !game.platforms.is_empty() && game.platforms.iter().all(|p| p.is_windows()),
+    };
     let value_of = {
         let existing = existing.clone();
-        move |d: &SettingDef| {
-            existing
-                .as_ref()
-                .and_then(|r| r.settings.iter().find(|s| s.section == d.section && s.key == d.key))
-                .map(|s| s.value.clone())
-                .unwrap_or_default()
+        move |d: &SettingDef| match &existing {
+            Some(r) => r.settings.iter().find(|s| s.section == d.section && s.key == d.key).map(|s| s.value.clone()).unwrap_or_default(),
+            None if windows && d.section == "emulator" && d.key == "win32" => "true".to_string(),
+            None => String::new(),
         }
     };
     let rating = existing.as_ref().map(|r| r.rating);
-    let version = existing.as_ref().map_or(version, |r| r.version_id);
     let rdv = existing.as_ref().and_then(|r| r.rust_dos_version.clone()).unwrap_or_default();
     let description = existing.as_ref().and_then(|r| r.description.clone()).unwrap_or_default();
 
@@ -69,18 +70,20 @@ fn ReportFields(game: GameDetail, version: Option<i64>, existing: Option<ReportI
         </div>
         <p class="hint">"Settings you leave at “—” count as not given. Only fill in what you actually used."</p>
         <div class="settings-grid">
-            {SECTIONS
+            {GROUPS
                 .iter()
-                .map(|section| {
-                    let title = SECTION_TITLES.iter().find(|(s, _)| s == section).map_or(*section, |(_, t)| *t);
+                .map(|(group, title)| {
+                    let defs: Vec<&SettingDef> = SETTINGS.iter().filter(|d| d.group() == *group).collect();
+                    let mut sections: Vec<&str> = defs.iter().map(|d| d.section).collect();
+                    sections.dedup();
+                    let hint = (*group == "windows").then(|| {
+                        view! { <p class="hint">"For Windows 3.1 and 95/98 programs, run on Rust-DOS's built-in Windows."</p> }
+                    });
                     view! {
                         <fieldset class="settings">
-                            <legend>{title} <span class="key">{format!(" [{section}]")}</span></legend>
-                            {SETTINGS
-                                .iter()
-                                .filter(|d| d.section == *section)
-                                .map(|d| view! { <SettingInput def=*d value=value_of(d) /> })
-                                .collect_view()}
+                            <legend>{*title} <span class="key">{format!(" [{}]", sections.join("] ["))}</span></legend>
+                            {hint}
+                            {defs.into_iter().map(|d| view! { <SettingInput def=*d value=value_of(d) /> }).collect_view()}
                         </fieldset>
                     }
                 })

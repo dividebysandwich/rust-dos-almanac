@@ -14,6 +14,10 @@ rust-dos.com's Turbo Vision desktop, and a JSON API Rust-DOS can query.
   descriptions, and **bless** one report per game + version, which then
   overrides the consensus.
 - Anonymous writes are rate limited per client address.
+- DOS programs and Windows 3.1/95/98 programs alike: Rust-DOS runs Windows
+  programs on its built-in Windows. Each version has a platform (`dos`,
+  `win16`, `win32`, or none if unknown), and a Windows version is
+  recommended `win32=true` unless reports or a blessing set `win32` themselves.
 
 Stack: Leptos 0.8 (SSR + hydration), Axum 0.8, SeaORM 2 on SQLite (MariaDB
 works via `DATABASE_URL=mysql://…`).
@@ -56,11 +60,11 @@ Other commands: `migrate`, `set-password <user>`.
 
 | Method & path | Who | |
 |---|---|---|
-| `GET /schema` | all | Known settings and allowed values |
-| `GET /games?q=&page=` | all | Search name, aliases and slug |
-| `POST /games/lookup` | all | `{"ra_md5": "…", "files": [{"name", "size", "crc32", "md5", "sha1"}]}` → matching versions, best first |
+| `GET /schema` | all | Known settings, allowed values and form groups; `version` bumps when they change (2 added `win32_depth`) |
+| `GET /games?q=&platform=all\|dos\|windows&page=` | all | Search name, aliases and slug; `platform` keeps games with a version of that platform |
+| `POST /games/lookup` | all | `{"ra_md5": "…", "files": [{"name", "size", "crc32", "md5", "sha1"}]}` → matching versions with their `platform`, best first |
 | `GET /games/{slug}` | all | Game, versions, files, rating counts |
-| `GET /games/{slug}/config?version=&format=json\|ini` | all | Recommended settings; `ini` is a fragment for `rust-dos.conf` |
+| `GET /games/{slug}/config?version=&format=json\|ini` | all | Recommended settings; `ini` is a fragment for `rust-dos.conf`. A setting with `"implied": true` comes from the platform, not reports |
 | `GET /games/{slug}/reports` | all | |
 | `POST /games`, `POST /games/{slug}/versions`, `POST /reports` | all, rate limited | |
 | `PATCH /games/{slug}`, `PATCH /versions/{id}`, `PATCH /reports/{id}` | staff | Edit, or `{"hidden": true}` |
@@ -73,6 +77,13 @@ Report settings are `{"emulator": {"cpu": "486", "memsize": "16"}, "sound": {"sb
 They are validated against the values Rust-DOS accepts (`src/settings_schema.rs`)
 and normalised (`586` → `pentium`, `0x220` → `220`, `on` → `true`).
 `[drives]`, `[autoexec]` and file paths are deliberately not accepted.
+
+Versions take `"platform": "dos" | "win16" | "win32"` in `POST /games`
+(`version`), `POST /games/{slug}/versions` and `PATCH /versions/{id}`
+(`null` clears it). Windows settings are `emulator.win32`,
+`win32_version` (`95`, `98`, `98se`) and `win32_depth` (`auto`, `8`, `16`).
+Rust-DOS's `win32_dlls*` and `win32_trace`, and a profile's `[game] windows=`
+and `[install]`, are host or launch matters and are not accepted.
 
 ## Tests
 

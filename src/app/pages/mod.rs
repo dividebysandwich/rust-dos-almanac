@@ -37,7 +37,7 @@ pub fn AboutPage() -> impl IntoView {
             <Window title="About" class="prose">
                 <p>
                     <b>"Rust-DOS Almanac"</b>
-                    " collects how DOS games run in "
+                    " collects how DOS and Windows games run in "
                     <a href="https://rust-dos.com/">"Rust-DOS"</a>
                     " and which settings work best for each."
                 </p>
@@ -50,6 +50,7 @@ pub fn AboutPage() -> impl IntoView {
                 <p>"A blessed report wins. Otherwise each setting takes the value most reports chose. Rust-DOS offers fixed choices, so the almanac never averages 128 and 256 MB into something Rust-DOS doesn't have. Green reports count fully and yellow ones half. Red reports don't count, since they describe what didn't work."</p>
                 <h3>"Identifying a game"</h3>
                 <p>"A game has versions. A version is known by its files' names and checksums (CRC32, MD5 or SHA-1), and by the archive hash Rust-DOS computes for RetroAchievements."</p>
+                <p>"A version also has a platform: DOS, Windows 3.1 or Windows 95/98. Rust-DOS runs Windows programs on its built-in Windows, with no Windows installation, once win32=true is set. The almanac recommends that for every Windows version unless reports say otherwise."</p>
             </Window>
             <Window title="API" class="prose">
                 <p>"Rust-DOS and other clients use the JSON API:"</p>

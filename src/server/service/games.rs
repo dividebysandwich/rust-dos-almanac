@@ -87,7 +87,37 @@ pub fn normalize_ra(v: &str) -> Result<String> {
     hex_field("archive hash", Some(v), 32, false)?.ok_or_else(|| Error::invalid("archive hash is empty"))
 }
 
-fn summary(g: &game::Model, rating: RatingSummary) -> GameSummary {
+fn platform_of(v: &game_version::Model) -> Option<Platform> {
+    v.platform.as_deref().and_then(Platform::parse)
+}
+
+/// Per game, the distinct platforms of its visible versions.
+async fn platforms_by(db: &DatabaseConnection, game_ids: Vec<i32>) -> Result<HashMap<i32, Vec<Platform>>> {
+    let mut out: HashMap<i32, Vec<Platform>> = HashMap::new();
+    if game_ids.is_empty() {
+        return Ok(out);
+    }
+    let rows = game_version::Entity::find()
+        .filter(game_version::Column::GameId.is_in(game_ids))
+        .filter(game_version::Column::Hidden.eq(false))
+        .filter(game_version::Column::Platform.is_not_null())
+        .all(db)
+        .await?;
+    for v in &rows {
+        if let Some(p) = platform_of(v) {
+            let list = out.entry(v.game_id).or_default();
+            if !list.contains(&p) {
+                list.push(p);
+            }
+        }
+    }
+    for list in out.values_mut() {
+        list.sort();
+    }
+    Ok(out)
+}
+
+fn summary(g: &game::Model, rating: RatingSummary, platforms: Vec<Platform>) -> GameSummary {
     GameSummary {
         id: g.id.into(),
         slug: g.slug.clone(),
@@ -96,23 +126,38 @@ fn summary(g: &game::Model, rating: RatingSummary) -> GameSummary {
         publisher: g.publisher.clone(),
         hidden: g.hidden,
         rating,
+        platforms,
         updated_at: g.updated_at,
     }
 }
 
 async fn summaries(db: &DatabaseConnection, games: Vec<game::Model>) -> Result<Vec<GameSummary>> {
     let ids: Vec<i32> = games.iter().map(|g| g.id).collect();
-    let mut ratings = ratings_by(db, report::Column::GameId.is_in(ids), |r| Some(r.game_id)).await?;
-    Ok(games.iter().map(|g| summary(g, ratings.remove(&g.id).unwrap_or_default())).collect())
+    let mut ratings = ratings_by(db, report::Column::GameId.is_in(ids.clone()), |r| Some(r.game_id)).await?;
+    let mut platforms = platforms_by(db, ids).await?;
+    Ok(games
+        .iter()
+        .map(|g| summary(g, ratings.remove(&g.id).unwrap_or_default(), platforms.remove(&g.id).unwrap_or_default()))
+        .collect())
 }
 
 /// Games whose name, slug or aliases contain every word of `q`; the most
-/// recently changed ones when `q` is empty.
-pub async fn search(db: &DatabaseConnection, actor: &Actor, q: &str, page: u64) -> Result<Vec<GameSummary>> {
+/// recently changed ones when `q` is empty. With a platform filter, only
+/// games with a visible version of those platforms.
+pub async fn search(db: &DatabaseConnection, actor: &Actor, q: &str, platform: PlatformFilter, page: u64) -> Result<Vec<GameSummary>> {
     let key = search_key(q);
     let mut query = game::Entity::find();
     if !actor.is_staff() {
         query = query.filter(game::Column::Hidden.eq(false));
+    }
+    if let Some(platforms) = platform.platforms() {
+        let mut versions = sea_orm::sea_query::Query::select();
+        versions
+            .column(game_version::Column::GameId)
+            .from(game_version::Entity)
+            .and_where(game_version::Column::Hidden.eq(false))
+            .and_where(game_version::Column::Platform.is_in(platforms.iter().copied()));
+        query = query.filter(game::Column::Id.in_subquery(versions.to_owned()));
     }
     for word in key.split(' ').filter(|w| !w.is_empty()).take(8) {
         query = query.filter(game::Column::SearchText.contains(word));
@@ -167,6 +212,9 @@ pub async fn detail(db: &DatabaseConnection, actor: &Actor, g: game::Model) -> R
             archives.entry(a.version_id).or_default().push(a.ra_md5);
         }
     }
+    let mut platforms: Vec<Platform> = versions.iter().filter(|v| !v.hidden).filter_map(platform_of).collect();
+    platforms.sort();
+    platforms.dedup();
     let game_rating = ratings_by(db, report::Column::GameId.eq(g.id), |_| Some(g.id)).await?.remove(&g.id).unwrap_or_default();
     let mut by_version = ratings_by(db, report::Column::GameId.eq(g.id), |r| r.version_id).await?;
     Ok(GameDetail {
@@ -182,6 +230,7 @@ pub async fn detail(db: &DatabaseConnection, actor: &Actor, g: game::Model) -> R
             .map(|v| VersionInfo {
                 id: v.id.into(),
                 rating: by_version.remove(&v.id).unwrap_or_default(),
+                platform: platform_of(&v),
                 files: files.remove(&v.id).unwrap_or_default(),
                 ra_md5: archives.remove(&v.id).unwrap_or_default(),
                 label: v.label,
@@ -189,6 +238,7 @@ pub async fn detail(db: &DatabaseConnection, actor: &Actor, g: game::Model) -> R
             })
             .collect(),
         rating: game_rating,
+        platforms,
         created_at: g.created_at,
         updated_at: g.updated_at,
     })
@@ -218,6 +268,7 @@ async fn insert_version<C: sea_orm::ConnectionTrait>(db: &C, actor: &Actor, game
         game_id: Set(game_id),
         label: Set(label),
         hidden: Set(false),
+        platform: Set(v.platform.map(|p| p.as_str().to_string())),
         source_hash: Set((!actor.is_staff()).then(|| actor.source.clone())),
         created_at: Set(now()),
         ..Default::default()
@@ -370,6 +421,10 @@ pub async fn update_version(state: &AppState, actor: &Actor, version_id: i64, pa
         m.hidden = Set(h);
         changes.push(if h { "hidden" } else { "shown" });
     }
+    if let Some(p) = patch.platform {
+        m.platform = Set(p.map(|p| p.as_str().to_string()));
+        changes.push("platform");
+    }
     m.update(&txn).await?;
     if let Some(files) = &patch.files {
         let files: Vec<FileInfo> = files.iter().map(normalize_file).collect::<Result<_>>()?;
@@ -501,6 +556,7 @@ pub async fn lookup(db: &DatabaseConnection, actor: &Actor, req: LookupRequest) 
                 game: g.slug.clone(),
                 name: g.name.clone(),
                 version_id: v.id.into(),
+                platform: platform_of(&v),
                 version_label: v.label,
                 score: if s.ra { 100 } else { 0 } + s.hash * 3 + s.name,
                 ra_match: s.ra,

@@ -206,3 +206,88 @@ async fn anonymous_writes_are_rate_limited_per_client() {
     let (s, _) = c.call(Method::POST, "/api/v1/games", Some(json!({"name": "Direct 5"})), None, direct, Some("192.0.2.99")).await;
     assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
 }
+
+#[tokio::test]
+async fn windows_flow() {
+    let (c, state) = Client::new().await;
+    users::create_direct(&state.db, "admin", "correct horse battery", Role::Admin).await.unwrap();
+    let (_, login) = c.post("/api/v1/auth/login", json!({"username": "admin", "password": "correct horse battery"}), "198.51.100.9").await;
+    let token = login["token"].as_str().unwrap().to_string();
+
+    // A Windows 95 game, its version marked as such.
+    let (s, game) = c
+        .post(
+            "/api/v1/games",
+            json!({
+                "name": "Moto Racer", "year": 1997,
+                "version": {"label": "1.0", "platform": "win32", "files": [{"name": "MOTORACE.EXE", "size": 1404928, "crc32": "9f3e0c21"}]}
+            }),
+            "203.0.113.1",
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{game}");
+    let slug = game["slug"].as_str().unwrap().to_string();
+    let version = game["versions"][0]["id"].as_i64().unwrap();
+    assert_eq!(game["versions"][0]["platform"], "win32");
+    assert_eq!(game["platforms"], json!(["win32"]));
+
+    // A DOS game, from an old client that sends no platform, then one that does.
+    let (s, keen) = c.post("/api/v1/games", json!({"name": "Keen", "version": {"label": "1.4", "files": [{"name": "KEEN4E.EXE", "crc32": "1a2b3c4d"}]}}), "203.0.113.2").await;
+    assert_eq!(s, StatusCode::OK, "{keen}");
+    assert_eq!(keen["versions"][0]["platform"], Value::Null);
+    assert_eq!(keen["platforms"], json!([]));
+    let (s, v) = c.post("/api/v1/games/keen/versions", json!({"label": "1.4 CD", "platform": "dos", "files": [{"name": "KEEN4C.EXE", "crc32": "2a2b3c4d"}]}), "203.0.113.3").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["platform"], "dos");
+
+    // With no reports, a Windows version still gets the built-in Windows.
+    let (_, config) = c.get(&format!("/api/v1/games/{slug}/config?version={version}")).await;
+    assert_eq!(config["source"]["kind"], "none");
+    let w = setting(&config, "win32");
+    assert_eq!((w["value"].as_str(), w["implied"].as_bool()), (Some("true"), Some(true)));
+    assert_eq!(config["ini"], "[emulator]\nwin32=true\n");
+    let (_, config) = c.get(&format!("/api/v1/games/{slug}/config")).await;
+    assert_eq!(setting(&config, "win32")["value"], "true", "every version is a Windows one");
+    let (_, config) = c.get("/api/v1/games/keen/config").await;
+    assert_eq!(config["settings"], json!([]), "DOS games get nothing implied");
+
+    // Windows settings in a report.
+    let report = |depth: &str| json!({"game": slug, "version_id": version, "rating": "green",
+        "settings": {"emulator": {"win32": "on", "win32_version": "98SE", "win32_depth": depth, "cpu": "pentium_ii"}}});
+    let (s, r) = c.post("/api/v1/reports", report("24"), "203.0.113.20").await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{r}");
+    let (s, r) = c.post("/api/v1/reports", report("16"), "203.0.113.21").await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (_, config) = c.get(&format!("/api/v1/games/{slug}/config?version={version}")).await;
+    assert_eq!(config["source"]["kind"], "consensus");
+    assert_eq!(setting(&config, "win32")["implied"], Value::Null, "reported, not implied");
+    assert_eq!(setting(&config, "win32_depth")["value"], "16");
+    assert_eq!(config["ini"], "[emulator]\ncpu=pentium_ii\nwin32=true\nwin32_version=98se\nwin32_depth=16\n");
+
+    // Searching by platform.
+    let names = |v: &Value| v.as_array().unwrap().iter().map(|g| g["slug"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let (_, found) = c.get("/api/v1/games?platform=windows").await;
+    assert_eq!(names(&found), std::slice::from_ref(&slug));
+    assert_eq!(found[0]["platforms"], json!(["win32"]));
+    let (_, found) = c.get("/api/v1/games?platform=dos").await;
+    assert_eq!(names(&found), ["keen"]);
+    let (_, found) = c.get("/api/v1/games").await;
+    assert_eq!(found.as_array().unwrap().len(), 2);
+    let (s, _) = c.get("/api/v1/games?platform=amiga").await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Lookup tells the platform.
+    let (_, m) = c.post("/api/v1/games/lookup", json!({"files": [{"name": "motorace.exe", "crc32": "9f3e0c21"}]}), "203.0.113.50").await;
+    assert_eq!(m[0]["platform"], "win32");
+
+    // Staff correct a version's platform, and can clear it.
+    let keen_v = keen["versions"][0]["id"].as_i64().unwrap();
+    let (s, v) = c.call(Method::PATCH, &format!("/api/v1/versions/{keen_v}"), Some(json!({"platform": "win16"})), Some(&token), "198.51.100.9", None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["platform"], "win16");
+    let (_, v) = c.call(Method::PATCH, &format!("/api/v1/versions/{keen_v}"), Some(json!({"label": "1.4"})), Some(&token), "198.51.100.9", None).await;
+    assert_eq!(v["platform"], "win16", "a patch without platform leaves it");
+    let (_, schema) = c.get("/api/v1/schema").await;
+    assert_eq!(schema["version"], 2);
+    assert!(schema["settings"].as_array().unwrap().iter().any(|s| s["key"] == "win32_depth" && s["group"] == "windows"));
+}

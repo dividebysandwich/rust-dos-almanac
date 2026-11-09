@@ -70,7 +70,7 @@ pub fn App() -> impl IntoView {
         <Stylesheet id="leptos" href="/pkg/rust-dos-almanac.css" />
         <Link rel="icon" href="/favicon.svg" type_="image/svg+xml" />
         <Title formatter=|t: String| if t.is_empty() { "Rust-DOS Almanac".to_string() } else { format!("{t} · Rust-DOS Almanac") } />
-        <Meta name="description" content="Which Rust-DOS settings make a DOS game run well: community reports, a stoplight rating and recommended configurations." />
+        <Meta name="description" content="Which Rust-DOS settings make a DOS or Windows game run well: community reports, a stoplight rating and recommended configurations." />
         <Router>
             <MenuBar />
             <main class="desktop">

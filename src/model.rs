@@ -43,6 +43,100 @@ impl Rating {
     }
 }
 
+/// The system a version of a game runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Platform {
+    /// A DOS program (MZ, COM or batch).
+    Dos,
+    /// A Windows 3.1 program (NE), run on Rust-DOS's built-in Windows.
+    Win16,
+    /// A Windows 95/98 program (PE), run on Rust-DOS's built-in Windows.
+    Win32,
+}
+
+impl Platform {
+    pub const ALL: [Platform; 3] = [Platform::Dos, Platform::Win16, Platform::Win32];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Platform::Dos => "dos",
+            Platform::Win16 => "win16",
+            Platform::Win32 => "win32",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "dos" => Some(Platform::Dos),
+            "win16" | "win3" | "win31" | "ne" => Some(Platform::Win16),
+            "win32" | "win9x" | "win95" | "pe" => Some(Platform::Win32),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Platform::Dos => "DOS",
+            Platform::Win16 => "Windows 3.1",
+            Platform::Win32 => "Windows 95/98",
+        }
+    }
+
+    /// Short text for a badge.
+    pub fn badge(self) -> &'static str {
+        match self {
+            Platform::Dos => "DOS",
+            Platform::Win16 => "Win 3.1",
+            Platform::Win32 => "Win 9x",
+        }
+    }
+
+    /// Whether it needs Rust-DOS's built-in Windows (`win32=true`).
+    pub fn is_windows(self) -> bool {
+        matches!(self, Platform::Win16 | Platform::Win32)
+    }
+}
+
+/// What a game search keeps.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlatformFilter {
+    #[default]
+    All,
+    Dos,
+    /// Windows 3.1 or 95/98.
+    Windows,
+}
+
+impl PlatformFilter {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "all" => Some(PlatformFilter::All),
+            "dos" => Some(PlatformFilter::Dos),
+            "windows" | "win" => Some(PlatformFilter::Windows),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlatformFilter::All => "all",
+            PlatformFilter::Dos => "dos",
+            PlatformFilter::Windows => "windows",
+        }
+    }
+
+    /// The stored platform values it keeps; None keeps everything.
+    pub fn platforms(self) -> Option<&'static [&'static str]> {
+        match self {
+            PlatformFilter::All => None,
+            PlatformFilter::Dos => Some(&["dos"]),
+            PlatformFilter::Windows => Some(&["win16", "win32"]),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -128,6 +222,9 @@ pub struct GameSummary {
     pub publisher: Option<String>,
     pub hidden: bool,
     pub rating: RatingSummary,
+    /// The platforms of its visible versions that have one.
+    #[serde(default)]
+    pub platforms: Vec<Platform>,
     pub updated_at: i64,
 }
 
@@ -142,6 +239,9 @@ pub struct GameDetail {
     pub hidden: bool,
     pub versions: Vec<VersionInfo>,
     pub rating: RatingSummary,
+    /// The platforms of its versions that have one.
+    #[serde(default)]
+    pub platforms: Vec<Platform>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -151,6 +251,9 @@ pub struct VersionInfo {
     pub id: i64,
     pub label: String,
     pub hidden: bool,
+    /// None when nobody said.
+    #[serde(default)]
+    pub platform: Option<Platform>,
     pub files: Vec<FileInfo>,
     /// RetroAchievements-style archive hashes, as Rust-DOS computes them.
     pub ra_md5: Vec<String>,
@@ -228,6 +331,14 @@ pub struct RecommendedSetting {
     /// Reports that set this key at all (consensus only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voters: Option<u32>,
+    /// Not from reports: the version's platform calls for it (a Windows
+    /// program needs `win32=true`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub implied: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -245,6 +356,8 @@ pub struct Recommendation {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NewVersion {
     pub label: String,
+    #[serde(default)]
+    pub platform: Option<Platform>,
     #[serde(default)]
     pub files: Vec<FileInfo>,
     #[serde(default)]
@@ -293,6 +406,8 @@ pub struct GamePatch {
 pub struct VersionPatch {
     pub label: Option<String>,
     pub hidden: Option<bool>,
+    /// Some(None) clears it.
+    pub platform: Option<Option<Platform>>,
     /// Replaces the version's files.
     pub files: Option<Vec<FileInfo>>,
     /// Replaces the version's archive hashes.
@@ -324,6 +439,8 @@ pub struct LookupMatch {
     pub name: String,
     pub version_id: i64,
     pub version_label: String,
+    #[serde(default)]
+    pub platform: Option<Platform>,
     pub score: u32,
     pub ra_match: bool,
     /// Files that matched by name and checksum.
@@ -355,6 +472,9 @@ pub struct SchemaSetting {
     pub section: String,
     pub key: String,
     pub label: String,
+    /// Where the report form shows it: machine, windows, sound or input.
+    #[serde(default)]
+    pub group: String,
     /// The accepted values, or None where any value in range is accepted (cycles).
     pub options: Option<Vec<String>>,
 }
@@ -370,7 +490,13 @@ pub fn schema_info() -> SchemaInfo {
         version: crate::settings_schema::SCHEMA_VERSION,
         settings: crate::settings_schema::SETTINGS
             .iter()
-            .map(|d| SchemaSetting { section: d.section.into(), key: d.key.into(), label: d.label.into(), options: d.options() })
+            .map(|d| SchemaSetting {
+                section: d.section.into(),
+                key: d.key.into(),
+                label: d.label.into(),
+                group: d.group().into(),
+                options: d.options(),
+            })
             .collect(),
     }
 }

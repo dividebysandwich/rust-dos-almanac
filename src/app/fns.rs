@@ -35,6 +35,14 @@ fn opt(s: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
+/// A platform as a form posts it: empty for unknown.
+fn parse_platform(s: &str) -> Result<Option<Platform>, ServerFnError> {
+    match opt(s) {
+        Some(p) => Platform::parse(&p).map(Some).ok_or_else(|| ServerFnError::new("unknown platform")),
+        None => Ok(None),
+    }
+}
+
 fn parse_year(s: &str) -> Result<Option<i32>, ServerFnError> {
     match opt(s) {
         Some(y) => y.parse().map(Some).map_err(|_| ServerFnError::new("the year is a number like 1993")),
@@ -93,9 +101,9 @@ pub async fn logout() -> Result<(), ServerFnError> {
 }
 
 #[server(prefix = "/_sfn")]
-pub async fn search_games(q: String, page: u64) -> Result<Vec<GameSummary>, ServerFnError> {
+pub async fn search_games(q: String, platform: PlatformFilter, page: u64) -> Result<Vec<GameSummary>, ServerFnError> {
     let (state, actor) = ctx().await?;
-    Ok(games::search(&state.db, &actor, &q, page).await?)
+    Ok(games::search(&state.db, &actor, &q, platform, page).await?)
 }
 
 #[server(prefix = "/_sfn")]
@@ -129,13 +137,16 @@ pub async fn create_game(
     publisher: String,
     aliases: String,
     label: String,
+    platform: String,
     files: String,
     ra_md5: String,
 ) -> Result<String, ServerFnError> {
     let (state, actor) = ctx().await?;
-    let version = if opt(&label).is_some() || opt(&files).is_some() || opt(&ra_md5).is_some() {
+    let platform = parse_platform(&platform)?;
+    let version = if opt(&label).is_some() || opt(&files).is_some() || opt(&ra_md5).is_some() || platform.is_some() {
         Some(NewVersion {
             label: opt(&label).unwrap_or_else(|| "Original".into()),
+            platform,
             files: parse_file_lines(&files).map_err(ServerFnError::new)?,
             ra_md5: opt(&ra_md5),
         })
@@ -149,9 +160,9 @@ pub async fn create_game(
 }
 
 #[server(prefix = "/_sfn")]
-pub async fn add_version(slug: String, label: String, files: String, ra_md5: String) -> Result<i64, ServerFnError> {
+pub async fn add_version(slug: String, label: String, platform: String, files: String, ra_md5: String) -> Result<i64, ServerFnError> {
     let (state, actor) = ctx().await?;
-    let input = NewVersion { label, files: parse_file_lines(&files).map_err(ServerFnError::new)?, ra_md5: opt(&ra_md5) };
+    let input = NewVersion { label, platform: parse_platform(&platform)?, files: parse_file_lines(&files).map_err(ServerFnError::new)?, ra_md5: opt(&ra_md5) };
     let v = games::add_version(&state, &actor, &slug, input).await?;
     leptos_axum::redirect(&format!("/games/{slug}?v={}", v.id));
     Ok(v.id)
@@ -250,11 +261,12 @@ pub async fn set_game_hidden(slug: String, hidden: bool) -> Result<(), ServerFnE
 }
 
 #[server(prefix = "/_sfn")]
-pub async fn edit_version(id: i64, label: String, files: String, ra_md5: String) -> Result<(), ServerFnError> {
+pub async fn edit_version(id: i64, label: String, platform: String, files: String, ra_md5: String) -> Result<(), ServerFnError> {
     let (state, actor) = ctx().await?;
     let patch = VersionPatch {
         label: Some(label),
         hidden: None,
+        platform: Some(parse_platform(&platform)?),
         files: Some(parse_file_lines(&files).map_err(ServerFnError::new)?),
         ra_md5: Some(parse_list(&ra_md5)),
     };

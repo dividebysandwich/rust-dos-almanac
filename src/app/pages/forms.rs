@@ -1,5 +1,5 @@
 use super::game::Field;
-use crate::app::components::{ActionError, Dialog, Window};
+use crate::app::components::{ActionError, Dialog, PlatformSelect, Window};
 use crate::app::fns::{AddVersion, CreateGame};
 use leptos::prelude::*;
 use leptos_meta::Title;
@@ -12,7 +12,8 @@ pub fn FilesField(#[prop(optional, into)] value: String) -> impl IntoView {
     view! {
         <div class="field wide">
             <label for="f-files">"Files"</label>
-            <textarea id="f-files" name="files" class="input" rows="6" spellcheck="false" placeholder="KEEN4E.EXE 263046 1a2b3c4d">
+            <textarea id="f-files" name="files" class="input" rows="6" spellcheck="false" placeholder="KEEN4E.EXE 263046 1a2b3c4d
+MOTORACE.EXE 1404928 9f3e0c21">
                 {value}
             </textarea>
             <p class="hint">"One file per line: NAME [SIZE] [CRC32] [MD5] [SHA1]. Hashes are recognised by length; write size= before an 8-digit size."</p>
@@ -38,6 +39,7 @@ pub fn NewGamePage() -> impl IntoView {
                     <fieldset>
                         <legend>"First version (optional)"</legend>
                         <Field label="Label" name="label" placeholder="1.4 shareware" />
+                        <PlatformSelect />
                         <FilesField />
                         <Field label="Archive hash" name="ra_md5" placeholder="RetroAchievements MD5 from Rust-DOS" />
                     </fieldset>
@@ -62,6 +64,7 @@ fn FormHelp() -> impl IntoView {
     view! {
         <Window title="Help" class="help">
             <p>"Search first, so the game isn't added twice. A different release (CD-ROM, a patch, a GOG copy) is a new version of the same game."</p>
+            <p>"The platform is what the game's program is: a DOS program, or a Windows 3.1 or 95/98 one that Rust-DOS runs on its built-in Windows. Rust-DOS fills it in when it adds a version itself."</p>
             <p>"Checksums let Rust-DOS recognise the game on disk. Any of CRC32, MD5 or SHA-1 will do. List a few characteristic files, such as the main executable and its data files."</p>
         </Window>
     }
@@ -79,6 +82,7 @@ pub fn NewVersionPage() -> impl IntoView {
                 <ActionForm action=add attr:class="form">
                     <input type="hidden" name="slug" value=slug />
                     <Field label="Label" name="label" required=true placeholder="1.1 CD-ROM" />
+                    <PlatformSelect />
                     <FilesField />
                     <Field label="Archive hash" name="ra_md5" placeholder="RetroAchievements MD5 from Rust-DOS" />
                     <ActionError action=add />

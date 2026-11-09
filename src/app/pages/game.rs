@@ -1,4 +1,4 @@
-use crate::app::components::{ActionError, ErrorLine, Light, RatingBar, RecommendedTable, SettingChips, Window, date, error_text};
+use crate::app::components::{ActionError, ErrorLine, Light, PlatformBadge, PlatformSelect, RatingBar, RecommendedTable, SettingChips, Window, date, error_text};
 use crate::app::fns::*;
 use crate::app::use_session;
 use crate::model::{GameDetail, Recommendation, RecommendationSource, ReportInfo, Scope, VersionInfo, file_lines};
@@ -119,6 +119,7 @@ fn GameHeader(game: GameDetail, report_href: String) -> impl IntoView {
             <div class="head-body">
                 <h1 class="game-name">
                     {game.name.clone()}
+                    {game.platforms.iter().map(|p| view! { <PlatformBadge platform=*p /> }).collect_view()}
                     {hidden.then(|| view! { <span class="badge">"hidden"</span> })}
                 </h1>
                 {(!meta.is_empty()).then(|| view! { <p class="meta">{meta.join(" · ")}</p> })}
@@ -236,6 +237,7 @@ fn Versions(game: GameDetail, selected: Option<i64>) -> impl IntoView {
                                     {v.label}
                                     <span class="muted">{format!(" {} files", v.files.len())}</span>
                                 </A>
+                                {v.platform.map(|p| view! { <PlatformBadge platform=p /> })}
                                 {v.hidden.then(|| view! { <span class="badge">"hidden"</span> })}
                             </li>
                         }
@@ -253,6 +255,7 @@ fn VersionFiles(slug: String, version: VersionInfo) -> impl IntoView {
     let v = version.clone();
     view! {
         <Window title=format!("Files: {}", version.label) class="files-win">
+            {version.platform.map(|p| view! { <p class="platform-line">{format!("Platform: {}", p.label())}{p.is_windows().then_some(" · runs on Rust-DOS's built-in Windows (win32=true)")}</p> })}
             {if version.files.is_empty() {
                 view! { <p class="muted">"No files listed for this version."</p> }.into_any()
             } else {
@@ -310,6 +313,7 @@ fn VersionFiles(slug: String, version: VersionInfo) -> impl IntoView {
                                     <ActionForm action=actions.edit_version attr:class="form">
                                         <input type="hidden" name="id" value=v.id.to_string() />
                                         <Field label="Label" name="label" value=v.label.clone() required=true />
+                                        <PlatformSelect value=v.platform />
                                         <div class="field wide">
                                             <label for="f-files">"Files"</label>
                                             <textarea id="f-files" name="files" class="input" rows="8">

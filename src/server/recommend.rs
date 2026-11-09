@@ -6,9 +6,9 @@
 //! the advice. Green reports count fully, yellow half; red reports describe
 //! what didn't work, so they don't vote.
 
-use super::entities::{blessing, game, report, report_setting, user};
+use super::entities::{blessing, game, game_version, report, report_setting, user};
 use super::error::Result;
-use crate::model::{Rating, RatingSummary, Recommendation, RecommendationSource, RecommendedSetting, Scope};
+use crate::model::{Platform, Rating, RatingSummary, Recommendation, RecommendationSource, RecommendedSetting, Scope};
 use crate::settings_schema;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use std::collections::{BTreeMap, HashMap};
@@ -92,7 +92,7 @@ pub fn consensus(votes: &[Vote]) -> Vec<RecommendedSetting> {
         }
         tied.sort_by_key(|(v, _)| *v);
         let (value, tally) = tied[0];
-        out.push(RecommendedSetting { section, key, value: value.clone(), agree: Some(tally.count), voters: Some(voters) });
+        out.push(RecommendedSetting { section, key, value: value.clone(), agree: Some(tally.count), voters: Some(voters), implied: false });
     }
     out
 }
@@ -121,8 +121,46 @@ fn ini_of(settings: &[RecommendedSetting]) -> String {
     settings_schema::to_ini(settings.iter().map(|s| (s.section.as_str(), s.key.as_str(), s.value.as_str())))
 }
 
+/// A Windows program needs Rust-DOS's built-in Windows: without
+/// `win32=true` its DOS stub runs and says it needs Windows. When `windows`
+/// and nothing chose `win32` either way, it is added, marked implied.
+pub fn imply_platform(settings: &mut Vec<RecommendedSetting>, windows: bool) {
+    if !windows || settings.iter().any(|s| s.section == "emulator" && s.key == "win32") {
+        return;
+    }
+    settings.push(RecommendedSetting {
+        section: "emulator".into(),
+        key: "win32".into(),
+        value: "true".into(),
+        agree: None,
+        voters: None,
+        implied: true,
+    });
+    settings.sort_by_key(|s| settings_schema::order(&s.section, &s.key));
+}
+
+/// Whether the programs asked about are Windows ones: the version's
+/// platform when it has one; otherwise, whether every visible version of
+/// the game with a platform is a Windows one (and there is one).
+pub fn wants_windows(version: Option<Option<Platform>>, game_platforms: &[Option<Platform>]) -> bool {
+    if let Some(Some(p)) = version {
+        return p.is_windows();
+    }
+    let known: Vec<Platform> = game_platforms.iter().flatten().copied().collect();
+    !known.is_empty() && known.iter().all(|p| p.is_windows())
+}
+
+async fn platform_windows(db: &DatabaseConnection, game: &game::Model, version_id: Option<i32>) -> Result<bool> {
+    let versions = game_version::Entity::find().filter(game_version::Column::GameId.eq(game.id)).all(db).await?;
+    let platform = |v: &game_version::Model| v.platform.as_deref().and_then(Platform::parse);
+    let version = version_id.map(|id| versions.iter().find(|v| v.id == id).and_then(platform));
+    let all: Vec<Option<Platform>> = versions.iter().filter(|v| !v.hidden).map(platform).collect();
+    Ok(wants_windows(version, &all))
+}
+
 /// The recommendation for `game`, for one version or for any.
 pub async fn recommend(db: &DatabaseConnection, game: &game::Model, version_id: Option<i32>) -> Result<Recommendation> {
+    let windows = platform_windows(db, game, version_id).await?;
     let reports = report::Entity::find()
         .filter(report::Column::GameId.eq(game.id))
         .filter(report::Column::Hidden.eq(false))
@@ -145,12 +183,13 @@ pub async fn recommend(db: &DatabaseConnection, game: &game::Model, version_id: 
         // A hidden report's blessing is suspended, not followed.
         let Some(r) = reports.iter().find(|r| r.id == b.report_id) else { continue };
         let vote = votes_for(db, std::slice::from_ref(r)).await?.pop();
-        let settings: Vec<RecommendedSetting> = vote
+        let mut settings: Vec<RecommendedSetting> = vote
             .map(|v| v.settings)
             .unwrap_or_default()
             .into_iter()
-            .map(|(section, key, value)| RecommendedSetting { section, key, value, agree: None, voters: None })
+            .map(|(section, key, value)| RecommendedSetting { section, key, value, agree: None, voters: None, implied: false })
             .collect();
+        imply_platform(&mut settings, windows);
         let blessed_by = match b.user_id {
             Some(uid) => user::Entity::find_by_id(uid).one(db).await?.map(|u| u.username),
             None => None,
@@ -172,13 +211,15 @@ pub async fn recommend(db: &DatabaseConnection, game: &game::Model, version_id: 
         _ => (reports, Scope::Game),
     };
     let votes = votes_for(db, &pool).await?;
-    let settings = consensus(&votes);
+    let mut settings = consensus(&votes);
     let voters = votes.iter().filter(|v| weight(v.rating) > 0.0 && !v.settings.is_empty()).count() as u32;
+    let reported = !settings.is_empty();
+    imply_platform(&mut settings, windows);
     Ok(Recommendation {
         game: game.slug.clone(),
         version_id: version_id.map(i64::from),
         scope,
-        source: if settings.is_empty() { RecommendationSource::None } else { RecommendationSource::Consensus { reports: voters } },
+        source: if !reported { RecommendationSource::None } else { RecommendationSource::Consensus { reports: voters } },
         rating,
         ini: ini_of(&settings),
         settings,
@@ -254,5 +295,38 @@ mod tests {
         let r = consensus(&votes);
         assert_eq!(r.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), ["cpu", "sbtype"]);
         assert_eq!(value_of(&r, "sbtype").voters, Some(1));
+    }
+
+    #[test]
+    fn windows_versions_get_win32_implied() {
+        let mut r = consensus(&[vote(Rating::Green, 1, &[("emulator", "cpu", "pentium_ii"), ("sound", "sbtype", "sb16")])]);
+        imply_platform(&mut r, true);
+        assert_eq!(r.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), ["cpu", "win32", "sbtype"]);
+        let w = value_of(&r, "win32");
+        assert_eq!((w.value.as_str(), w.implied, w.agree), ("true", true, None));
+
+        let mut none = Vec::new();
+        imply_platform(&mut none, false);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn reported_win32_wins_over_the_platform() {
+        let mut r = consensus(&[vote(Rating::Green, 1, &[("emulator", "win32", "false")])]);
+        imply_platform(&mut r, true);
+        assert_eq!(r.len(), 1);
+        assert_eq!((value_of(&r, "win32").value.as_str(), value_of(&r, "win32").implied), ("false", false));
+    }
+
+    #[test]
+    fn which_versions_want_windows() {
+        use Platform::*;
+        assert!(wants_windows(Some(Some(Win32)), &[Some(Dos)]));
+        assert!(!wants_windows(Some(Some(Dos)), &[Some(Win32)]));
+        // An unknown version goes by the game's others.
+        assert!(wants_windows(Some(None), &[None, Some(Win16)]));
+        assert!(!wants_windows(None, &[Some(Win32), Some(Dos)]));
+        assert!(!wants_windows(None, &[None]));
+        assert!(wants_windows(None, &[Some(Win16), Some(Win32)]));
     }
 }

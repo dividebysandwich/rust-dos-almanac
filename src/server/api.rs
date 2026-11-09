@@ -66,10 +66,14 @@ struct SearchQuery {
     q: String,
     #[serde(default)]
     page: u64,
+    /// `all` (the default), `dos` or `windows`.
+    #[serde(default)]
+    platform: String,
 }
 
 async fn search(State(s): State<AppState>, actor: Actor, Query(q): Query<SearchQuery>) -> Result<Json<Vec<GameSummary>>> {
-    Ok(Json(games::search(&s.db, &actor, &q.q, q.page).await?))
+    let platform = PlatformFilter::parse(&q.platform).ok_or_else(|| Error::invalid("platform must be all, dos or windows"))?;
+    Ok(Json(games::search(&s.db, &actor, &q.q, platform, q.page).await?))
 }
 
 async fn create_game(State(s): State<AppState>, actor: Actor, Json(input): Json<NewGame>) -> Result<Json<GameDetail>> {

@@ -130,10 +130,12 @@ pub fn RecommendedTable(settings: Vec<RecommendedSetting>) -> impl IntoView {
                 {settings
                     .into_iter()
                     .map(|s| {
-                        let agree = match (s.agree, s.voters) {
-                            (Some(a), Some(v)) => format!("{a}/{v}"),
+                        let agree = match (s.agree, s.voters, s.implied) {
+                            (_, _, true) => "platform".to_string(),
+                            (Some(a), Some(v), _) => format!("{a}/{v}"),
                             _ => "★".to_string(),
                         };
+                        let title = s.implied.then_some("A Windows program needs the built-in Windows; no report said otherwise");
                         view! {
                             <tr>
                                 <td data-label="Setting">
@@ -144,7 +146,7 @@ pub fn RecommendedTable(settings: Vec<RecommendedSetting>) -> impl IntoView {
                                 <td data-label="Value" class="val">
                                     {s.value}
                                 </td>
-                                <td data-label="Agree" class="num">
+                                <td data-label="Agree" class="num" class:implied=s.implied title=title>
                                     {agree}
                                 </td>
                             </tr>
@@ -216,4 +218,31 @@ where
 
 pub fn date(ts: i64) -> String {
     crate::model::format_date(ts)
+}
+
+/// "DOS", "Win 3.1" or "Win 9x", as a small badge.
+#[component]
+pub fn PlatformBadge(platform: crate::model::Platform) -> impl IntoView {
+    let class = format!("badge platform platform-{}", platform.as_str());
+    view! { <span class=class title=platform.label()>{platform.badge()}</span> }
+}
+
+/// The platform drop-down of the version forms; empty means unknown.
+#[component]
+pub fn PlatformSelect(#[prop(default = None)] value: Option<crate::model::Platform>) -> impl IntoView {
+    view! {
+        <div class="field">
+            <label for="f-platform">"Platform"</label>
+            <span class="select">
+                <select id="f-platform" name="platform" class="input">
+                    <option value="" selected=value.is_none()>
+                        "Unknown"
+                    </option>
+                    {crate::model::Platform::ALL
+                        .map(|p| view! { <option value=p.as_str() selected=value == Some(p)>{p.label()}</option> })
+                        .collect_view()}
+                </select>
+            </span>
+        </div>
+    }
 }

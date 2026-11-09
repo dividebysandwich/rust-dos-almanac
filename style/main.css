@@ -570,3 +570,15 @@ select.input option { background: var(--cyan); color: var(--black); }
 @media (prefers-reduced-motion: reduce) {
   .cursor { animation: none; }
 }
+
+/* ─── Platforms ─────────────────────────────────────────────────────── */
+
+.badge.platform-dos { background: var(--dgray); color: var(--white); }
+.badge.platform-win16 { background: var(--cyan); color: var(--black); }
+.badge.platform-win32 { background: var(--blue); color: var(--lcyan); }
+.list .platforms .badge:first-child { margin-left: 0; }
+.list .platforms { white-space: nowrap; }
+.platform-filter { flex: 0 0 auto; }
+.platform-filter .input { width: auto; }
+.platform-line { color: var(--lcyan); }
+.list .num.implied { color: var(--blue); font-style: italic; }

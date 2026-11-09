@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 /// Bumped whenever a key or a value domain changes, so clients can notice.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Domain {
@@ -35,9 +35,23 @@ pub struct SettingDef {
     pub domain: Domain,
 }
 
+/// The groups the report form shows settings in, by id and title. Only the
+/// form uses them: config files still go by section.
+pub const GROUPS: &[(&str, &str)] = &[("machine", "Machine"), ("windows", "Windows"), ("sound", "Sound"), ("input", "Input")];
+
 impl SettingDef {
     pub fn id(&self) -> String {
         format!("{}.{}", self.section, self.key)
+    }
+
+    /// Which of [`GROUPS`] the form shows it in.
+    pub fn group(&self) -> &'static str {
+        match (self.section, self.key) {
+            ("emulator", "win32" | "win32_version" | "win32_depth") => "windows",
+            ("emulator", _) => "machine",
+            ("sound", _) => "sound",
+            _ => "input",
+        }
     }
 
     /// Values to offer in a drop-down, or None for free entry.
@@ -167,8 +181,9 @@ pub static SETTINGS: &[SettingDef] = &[
     SettingDef { section: "emulator", key: "dpmi", label: "DPMI", domain: Domain::Bool },
     SettingDef { section: "emulator", key: "dos_high", label: "DOS=HIGH", domain: Domain::Bool },
     SettingDef { section: "emulator", key: "dos_version", label: "DOS version", domain: Domain::DosVersion },
-    SettingDef { section: "emulator", key: "win32", label: "Windows 9x", domain: Domain::Bool },
+    SettingDef { section: "emulator", key: "win32", label: "Built-in Windows", domain: Domain::Bool },
     SettingDef { section: "emulator", key: "win32_version", label: "Windows version", domain: Domain::Choice(&["95", "98", "98se"], &[]) },
+    SettingDef { section: "emulator", key: "win32_depth", label: "Windows colour depth", domain: Domain::Choice(&["auto", "8", "16"], &[]) },
     SettingDef { section: "emulator", key: "voodoo", label: "3dfx Voodoo", domain: Domain::Bool },
     SettingDef { section: "emulator", key: "voodoo_model", label: "Voodoo model", domain: Domain::Choice(&["voodoo1", "voodoo2"], &[]) },
     SettingDef { section: "emulator", key: "voodoo_memory", label: "Voodoo memory (MB)", domain: Domain::IntSet(&[4, 8, 12]) },
@@ -270,6 +285,17 @@ pub fn warnings(settings: &[(String, String, String)]) -> Vec<String> {
             out.push(format!("{mem} MB is more than a {cpu} system takes ({cap} MB)"));
         }
     }
+    let windows = get("win32") == Some("true");
+    if !windows {
+        for key in ["win32_version", "win32_depth"] {
+            if get(key).is_some() {
+                out.push(format!("{key} has no effect without win32=true"));
+            }
+        }
+    }
+    if windows && matches!(get("cpu"), Some("386" | "486")) {
+        out.push("many Windows 9x games need a Pentium or better (RDTSC, MMX)".into());
+    }
     out
 }
 
@@ -344,5 +370,32 @@ mod tests {
     fn memsize_over_cpu_cap_warns() {
         let s = vec![("emulator".into(), "cpu".into(), "386".into()), ("emulator".into(), "memsize".into(), "128".into())];
         assert_eq!(warnings(&s).len(), 1);
+    }
+
+    #[test]
+    fn win32_depth_takes_auto_8_or_16() {
+        assert_eq!(norm("emulator", "win32_depth", "AUTO").unwrap(), "auto");
+        assert_eq!(norm("emulator", "win32_depth", "8").unwrap(), "8");
+        assert!(norm("emulator", "win32_depth", "24").is_err());
+        assert!(norm("emulator", "win32_depth", "32").is_err());
+    }
+
+    #[test]
+    fn windows_warnings() {
+        let s = |list: &[(&str, &str)]| list.iter().map(|(k, v)| ("emulator".to_string(), k.to_string(), v.to_string())).collect::<Vec<_>>();
+        assert_eq!(warnings(&s(&[("win32_depth", "8")])).len(), 1);
+        assert_eq!(warnings(&s(&[("win32", "false"), ("win32_version", "98se"), ("win32_depth", "16")])).len(), 2);
+        assert_eq!(warnings(&s(&[("win32", "true"), ("cpu", "486")])).len(), 1);
+        assert!(warnings(&s(&[("win32", "true"), ("cpu", "pentium_ii"), ("win32_depth", "8")])).is_empty());
+    }
+
+    #[test]
+    fn every_setting_has_a_group() {
+        for d in SETTINGS {
+            assert!(GROUPS.iter().any(|(id, _)| *id == d.group()), "{}", d.id());
+        }
+        assert_eq!(find("emulator", "win32_depth").unwrap().group(), "windows");
+        assert_eq!(find("emulator", "cpu").unwrap().group(), "machine");
+        assert_eq!(find("joystick", "joysticktype").unwrap().group(), "input");
     }
 }

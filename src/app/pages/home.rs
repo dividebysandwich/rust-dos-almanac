@@ -1,6 +1,6 @@
-use crate::app::components::{Counts, ErrorLine, Light, StopLight, Window, date, error_text};
+use crate::app::components::{Counts, ErrorLine, Light, PlatformBadge, StopLight, Window, date, error_text};
 use crate::app::fns::search_games;
-use crate::model::GameSummary;
+use crate::model::{GameSummary, PlatformFilter};
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_router::components::A;
@@ -16,7 +16,8 @@ pub fn HomePage() -> impl IntoView {
     let query = use_query_map();
     let q = move || query.read().get("q").unwrap_or_default();
     let page = move || query.read().get("page").and_then(|p| p.parse::<u64>().ok()).unwrap_or(0);
-    let results = Resource::new(move || (q(), page()), |(q, p)| search_games(q, p));
+    let platform = move || query.read().get("platform").and_then(|p| PlatformFilter::parse(&p)).unwrap_or_default();
+    let results = Resource::new(move || (q(), platform(), page()), |(q, f, p)| search_games(q, f, p));
     let pending = RwSignal::new(false);
 
     // Search as you type: the query lives in the URL, so results stay
@@ -24,13 +25,14 @@ pub fn HomePage() -> impl IntoView {
     // rather than adding one per keystroke.
     let navigate = use_navigate();
     let input = NodeRef::<leptos::html::Input>::new();
+    let filter = NodeRef::<leptos::html::Select>::new();
     let timer = StoredValue::new(None::<TimeoutHandle>);
     let sent = StoredValue::new(None::<String>);
     let search = move |text: String| {
         let text = text.trim().to_string();
         sent.set_value(Some(text.clone()));
-        let url = if text.is_empty() { "/".to_string() } else { format!("/?q={}", urlencode(&text)) };
-        navigate(&url, NavigateOptions { replace: true, scroll: false, ..Default::default() });
+        let f = filter.get_untracked().and_then(|el| PlatformFilter::parse(&el.value())).unwrap_or_default();
+        navigate(&search_href(&text, f, 0), NavigateOptions { replace: true, scroll: false, ..Default::default() });
     };
     let cancel = move || {
         if let Some(t) = timer.get_value() {
@@ -44,6 +46,15 @@ pub fn HomePage() -> impl IntoView {
             let text = event_target_value(&ev);
             let search = search.clone();
             timer.set_value(set_timeout_with_handle(move || search(text), SEARCH_DELAY).ok());
+        }
+    };
+    let on_filter = {
+        let search = search.clone();
+        move |_| {
+            cancel();
+            if let Some(el) = input.get() {
+                search(el.value());
+            }
         }
     };
     let on_submit = move |ev: leptos::ev::SubmitEvent| {
@@ -71,7 +82,7 @@ pub fn HomePage() -> impl IntoView {
                 <div class="hero-body">
                     <h1 class="logo">"Rust-DOS Almanac"</h1>
                     <p class="tagline">
-                        "How DOS games run, and the settings that make them run well"
+                        "How DOS and Windows games run, and the settings that make them run well"
                         <span class="cursor" aria-hidden="true">
                             "_"
                         </span>
@@ -94,6 +105,13 @@ pub fn HomePage() -> impl IntoView {
                             node_ref=input
                             on:input=on_input
                         />
+                        <span class="select platform-filter">
+                            <select name="platform" class="input" aria-label="Platform" node_ref=filter on:change=on_filter>
+                                {[(PlatformFilter::All, "All"), (PlatformFilter::Dos, "DOS"), (PlatformFilter::Windows, "Windows")]
+                                    .map(|(f, text)| view! { <option value=f.as_str() selected=move || platform() == f>{text}</option> })
+                                    .collect_view()}
+                            </select>
+                        </span>
                         <button class="btn is-default" type="submit">
                             "Search"
                         </button>
@@ -117,7 +135,12 @@ pub fn HomePage() -> impl IntoView {
         </div>
         <Window
             title=Signal::derive(move || {
-                let title = if q().is_empty() { "Recently updated".to_string() } else { format!("Search: {}", q()) };
+                let mut title = if q().is_empty() { "Recently updated".to_string() } else { format!("Search: {}", q()) };
+                match platform() {
+                    PlatformFilter::All => {}
+                    PlatformFilter::Dos => title.push_str(" (DOS)"),
+                    PlatformFilter::Windows => title.push_str(" (Windows)"),
+                }
                 if pending.get() { format!("{title} …") } else { title }
             })
             class="results"
@@ -142,7 +165,7 @@ pub fn HomePage() -> impl IntoView {
                             view! {
                                 <p class="sr-only" role="status">{count}</p>
                                 <GameList games />
-                                <Pager q=q() page=page() more=full />
+                                <Pager q=q() platform=platform() page=page() more=full />
                             }
                                 .into_any()
                         }
@@ -156,8 +179,8 @@ pub fn HomePage() -> impl IntoView {
 }
 
 #[component]
-fn Pager(q: String, page: u64, more: bool) -> impl IntoView {
-    let link = move |p: u64| format!("/?q={}&page={p}", urlencode(&q));
+fn Pager(q: String, platform: PlatformFilter, page: u64, more: bool) -> impl IntoView {
+    let link = move |p: u64| search_href(&q, platform, p);
     let prev = (page > 0).then(|| link(page - 1));
     let next = more.then(|| link(page + 1));
     view! {
@@ -166,6 +189,21 @@ fn Pager(q: String, page: u64, more: bool) -> impl IntoView {
             {next.map(|h| view! { <A href=h attr:class="btn">"Next ►"</A> })}
         </p>
     }
+}
+
+/// The front page's address for a search.
+fn search_href(q: &str, platform: PlatformFilter, page: u64) -> String {
+    let mut parts = Vec::new();
+    if !q.is_empty() {
+        parts.push(format!("q={}", urlencode(q)));
+    }
+    if platform != PlatformFilter::All {
+        parts.push(format!("platform={}", platform.as_str()));
+    }
+    if page > 0 {
+        parts.push(format!("page={page}"));
+    }
+    if parts.is_empty() { "/".into() } else { format!("/?{}", parts.join("&")) }
 }
 
 pub fn urlencode(s: &str) -> String {
@@ -188,6 +226,7 @@ pub fn GameList(games: Vec<GameSummary>) -> impl IntoView {
                         <span class="sr-only">"Rating"</span>
                     </th>
                     <th scope="col">"Game"</th>
+                    <th scope="col">"Platform"</th>
                     <th scope="col">"Year"</th>
                     <th scope="col">"Publisher"</th>
                     <th scope="col">"Reports"</th>
@@ -207,6 +246,9 @@ pub fn GameList(games: Vec<GameSummary>) -> impl IntoView {
                                 <td class="name">
                                     <A href=href>{g.name}</A>
                                     {g.hidden.then(|| view! { <span class="badge">"hidden"</span> })}
+                                </td>
+                                <td data-label="Platform" class="platforms">
+                                    {g.platforms.iter().map(|p| view! { <PlatformBadge platform=*p /> }).collect_view()}
                                 </td>
                                 <td data-label="Year">{g.year.map(|y| y.to_string()).unwrap_or_default()}</td>
                                 <td data-label="Publisher">{g.publisher.unwrap_or_default()}</td>

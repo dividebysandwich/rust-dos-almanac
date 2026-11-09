@@ -9,6 +9,8 @@ pub struct Model {
     pub label: String,
     pub hidden: bool,
     pub source_hash: Option<String>,
+    /// `dos`, `win16` or `win32`; None when unknown.
+    pub platform: Option<String>,
     pub created_at: i64,
 }
 

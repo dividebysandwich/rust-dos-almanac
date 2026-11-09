@@ -3,7 +3,7 @@ members = [".", "migration"]
 
 [package]
 name = "rust-dos-almanac"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Game compatibility database and API for the Rust-DOS emulator"
 license = "GPL-2.0"

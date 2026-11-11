@@ -246,3 +246,143 @@ pub fn PlatformSelect(#[prop(default = None)] value: Option<crate::model::Platfo
         </div>
     }
 }
+
+/// A box to paste a Rust-DOS game profile (`games/<id>.conf`) or
+/// configuration file into, which fills in the form around it: the
+/// fields with the ids `PastedConfig` has values for (`f-name`, `f-year`,
+/// `f-publisher`, `f-notes`, `f-key`, and `s-<section>-<key>` for the
+/// settings). The text itself is never sent.
+#[component]
+pub fn PasteConfig() -> impl IntoView {
+    let text = RwSignal::new(String::new());
+    let outcome = RwSignal::new(None::<(String, bool)>);
+    let fill = move |_| {
+        let pasted = crate::model::parse_config(&text.get_untracked());
+        outcome.set(Some(fill_form(&pasted)));
+    };
+    view! {
+        <details class="paste-config">
+            <summary>"Paste your Rust-DOS game profile to fill in the form"</summary>
+            <div class="field wide">
+                <label for="f-paste">"Profile"</label>
+                <textarea
+                    id="f-paste"
+                    class="input"
+                    rows="8"
+                    spellcheck="false"
+                    placeholder="[game]
+name=Commander Keen 4
+year=1991
+
+[emulator]
+cpu=486"
+                    on:input=move |ev| text.set(event_target_value(&ev))
+                ></textarea>
+                <p class="hint">
+                    "The game's .conf from the games folder beside rust-dos.conf. Only the game's name, year, publisher, notes and UUID and the machine's settings are taken; drives, commands and paths stay with you. With the profile's UUID, this report replaces the one the profile sent before."
+                </p>
+            </div>
+            <p class="form-buttons">
+                <button type="button" class="btn" on:click=fill>
+                    "Fill in the form"
+                </button>
+            </p>
+            {move || {
+                outcome
+                    .get()
+                    .map(|(text, problem)| {
+                        view! {
+                            <p class=if problem { "error" } else { "hint" } role="status">
+                                {text}
+                            </p>
+                        }
+                    })
+            }}
+        </details>
+    }
+}
+
+/// Put `pasted` into the form's fields, the settings' all set again so
+/// the form has the profile's and no others. What it did, and whether
+/// something couldn't be taken.
+#[cfg(feature = "hydrate")]
+fn fill_form(pasted: &crate::model::PastedConfig) -> (String, bool) {
+    use leptos::web_sys::{HtmlInputElement, HtmlOptionElement, HtmlSelectElement, HtmlTextAreaElement};
+    use wasm_bindgen::JsCast;
+
+    let doc = document();
+    let set = |id: &str, value: &str| -> bool {
+        let Some(el) = doc.get_element_by_id(id) else { return false };
+        if let Some(input) = el.dyn_ref::<HtmlInputElement>() {
+            input.set_value(value);
+        } else if let Some(area) = el.dyn_ref::<HtmlTextAreaElement>() {
+            area.set_value(value);
+        } else if let Some(select) = el.dyn_ref::<HtmlSelectElement>() {
+            select.set_value(value);
+            if select.value() != value {
+                // A value outside the presets, such as memsize=24.
+                if let Ok(option) = HtmlOptionElement::new_with_text_and_value(value, value) {
+                    let _ = select.add_with_html_option_element(&option);
+                }
+                select.set_value(value);
+            }
+        } else {
+            return false;
+        }
+        true
+    };
+    let has_settings = settings_schema::SETTINGS.iter().any(|d| doc.get_element_by_id(&format!("s-{}-{}", d.section, d.key)).is_some());
+    if has_settings {
+        for d in settings_schema::SETTINGS {
+            set(&format!("s-{}-{}", d.section, d.key), "");
+        }
+    }
+    let mut filled = Vec::new();
+    let settings = pasted.settings.iter().filter(|(s, k, v)| set(&format!("s-{s}-{k}"), v)).count();
+    if settings > 0 {
+        filled.push(format!("{settings} setting{}", if settings == 1 { "" } else { "s" }));
+    }
+    let year = pasted.year.map(|y| y.to_string());
+    let fields = [
+        ("f-name", pasted.name.as_deref(), "the name"),
+        ("f-year", year.as_deref(), "the year"),
+        ("f-publisher", pasted.publisher.as_deref(), "the publisher"),
+        ("f-notes", pasted.notes.as_deref(), "the notes"),
+        ("f-key", pasted.key.as_deref(), "the UUID"),
+    ];
+    for (id, value, what) in fields {
+        if let Some(v) = value
+            && set(id, v)
+        {
+            filled.push(what.to_string());
+        }
+    }
+    let mut text = if filled.is_empty() {
+        "Nothing in it fits this form.".to_string()
+    } else {
+        format!("Filled in {}.", list(&filled))
+    };
+    if !pasted.ignored.is_empty() {
+        let names: Vec<&str> = pasted.ignored.iter().map(|i| i.split_once('.').map_or(i.as_str(), |(_, k)| k)).collect();
+        text.push_str(&format!(" Not for the almanac: {}.", names.join(", ")));
+    }
+    if !pasted.problems.is_empty() {
+        text.push_str(&format!(" Left out: {}.", pasted.problems.join("; ")));
+    }
+    (text, !pasted.problems.is_empty() || filled.is_empty())
+}
+
+#[cfg(not(feature = "hydrate"))]
+fn fill_form(_: &crate::model::PastedConfig) -> (String, bool) {
+    ("The page is still loading.".to_string(), true)
+}
+
+/// "a, b and c".
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}

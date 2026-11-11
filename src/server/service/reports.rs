@@ -1,5 +1,5 @@
-use super::games::{find_version, find_visible};
-use super::{id32, log_action};
+use super::games::{self, find_version, find_visible};
+use super::{id32, key_hash, log_action};
 use crate::model::*;
 use crate::server::auth::{Actor, now};
 use crate::server::entities::{blessing, game, game_version, report, report_setting, user};
@@ -14,6 +14,19 @@ use sea_orm::{
 use std::collections::{HashMap, HashSet};
 
 const MAX_DESCRIPTION: usize = 4000;
+const MAX_NOTES: usize = 2000;
+
+/// A player's notes: plain text, lines kept.
+fn notes(n: Option<&str>) -> Result<Option<String>> {
+    let Some(n) = n.map(str::trim).filter(|n| !n.is_empty()) else { return Ok(None) };
+    if n.chars().count() > MAX_NOTES {
+        return Err(Error::invalid(format!("the notes are longer than {MAX_NOTES} characters")));
+    }
+    if n.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) {
+        return Err(Error::invalid("the notes contain control characters"));
+    }
+    Ok(Some(n.replace("\r\n", "\n")))
+}
 
 fn description(d: Option<&str>) -> Result<Option<String>> {
     let Some(d) = d.map(str::trim).filter(|d| !d.is_empty()) else { return Ok(None) };
@@ -83,6 +96,7 @@ pub async fn infos(db: &DatabaseConnection, actor: &Actor, reports: Vec<report::
                 version_label: r.version_id.and_then(|v| labels.get(&v).cloned()),
                 rating: Rating::parse(&r.rating)?,
                 description: r.description,
+                notes: r.notes,
                 rust_dos_version: r.rust_dos_version,
                 settings: s,
                 hidden: r.hidden,
@@ -90,6 +104,7 @@ pub async fn infos(db: &DatabaseConnection, actor: &Actor, reports: Vec<report::
                 author: r.user_id.and_then(|u| authors.get(&u).cloned()),
                 source: actor.is_staff().then_some(r.source_hash),
                 created_at: r.created_at,
+                updated_at: r.updated_at,
             })
         })
         .collect())
@@ -122,7 +137,11 @@ pub async fn get(db: &DatabaseConnection, actor: &Actor, id: i64) -> Result<Repo
     infos(db, actor, vec![r]).await?.pop().ok_or(Error::NotFound)
 }
 
-pub async fn create(state: &AppState, actor: &Actor, input: NewReport) -> Result<ReportInfo> {
+/// Add a report, or replace the one sent before with the same key on the
+/// same game: a key has a report on each game it reported, as one profile
+/// can run several games. A report staff blessed stays as they blessed
+/// it: the key moves to a new report instead. A hidden one stays hidden.
+pub async fn create(state: &AppState, actor: &Actor, input: NewReport) -> Result<ReportSaved> {
     let db = &state.db;
     let g = find_visible(db, actor, input.game.trim()).await?;
     let version_id = match input.version_id {
@@ -130,34 +149,77 @@ pub async fn create(state: &AppState, actor: &Actor, input: NewReport) -> Result
         None => None,
     };
     let settings = settings(&input.settings)?;
-    // Only staff write experience notes; anonymous text would need moderating first.
+    // Only staff write experience descriptions; players write notes.
     let description = if actor.is_staff() { description(input.description.as_deref())? } else { None };
+    let notes = notes(input.notes.as_deref())?;
     let rdv = rust_dos_version(input.rust_dos_version.as_deref())?;
+    let owner_key = key_hash(input.key.as_deref())?;
+    let year = games::year(input.year)?;
+    let publisher = games::opt_text("publisher", input.publisher.as_deref(), 200)?;
+    let before = match &owner_key {
+        Some(k) => {
+            report::Entity::find()
+                .filter(report::Column::OwnerKey.eq(k.as_str()))
+                .filter(report::Column::GameId.eq(g.id))
+                .one(db)
+                .await?
+        }
+        None => None,
+    };
+    let blessed = match &before {
+        Some(r) => blessing::Entity::find().filter(blessing::Column::ReportId.eq(r.id)).one(db).await?.is_some(),
+        None => false,
+    };
     actor.spend_write(state)?;
 
     let txn = db.begin().await?;
     let t = now();
-    let r = report::ActiveModel {
-        game_id: Set(g.id),
-        version_id: Set(version_id),
-        rating: Set(input.rating.as_str().into()),
-        description: Set(description),
-        rust_dos_version: Set(rdv),
-        user_id: Set(actor.user_id()),
-        source_hash: Set(actor.source.clone()),
-        hidden: Set(false),
-        created_at: Set(t),
-        updated_at: Set(t),
-        ..Default::default()
-    }
-    .insert(&txn)
-    .await?;
+    let (r, replaced) = match before {
+        Some(old) if !blessed => {
+            let mut m = old.into_active_model();
+            m.version_id = Set(version_id);
+            m.rating = Set(input.rating.as_str().into());
+            if actor.is_staff() {
+                m.description = Set(description);
+            }
+            m.notes = Set(notes);
+            m.rust_dos_version = Set(rdv);
+            m.source_hash = Set(actor.source.clone());
+            m.updated_at = Set(t);
+            (m.update(&txn).await?, true)
+        }
+        before => {
+            if let Some(old) = before {
+                let mut m = old.into_active_model();
+                m.owner_key = Set(None);
+                m.update(&txn).await?;
+            }
+            let r = report::ActiveModel {
+                game_id: Set(g.id),
+                version_id: Set(version_id),
+                rating: Set(input.rating.as_str().into()),
+                description: Set(description),
+                notes: Set(notes),
+                rust_dos_version: Set(rdv),
+                user_id: Set(actor.user_id()),
+                source_hash: Set(actor.source.clone()),
+                owner_key: Set(owner_key.clone()),
+                hidden: Set(false),
+                created_at: Set(t),
+                updated_at: Set(t),
+                ..Default::default()
+            }
+            .insert(&txn)
+            .await?;
+            (r, false)
+        }
+    };
     write_settings(&txn, r.id, settings).await?;
-    let mut gm = g.into_active_model();
-    gm.updated_at = Set(t);
-    gm.update(&txn).await?;
+    games::fill_in(&txn, &g, owner_key.as_deref(), year, publisher.as_deref()).await?;
+    games::touch(&txn, g.id).await?;
     txn.commit().await?;
-    infos(db, actor, vec![r]).await?.pop().ok_or(Error::NotFound)
+    let report = infos(db, actor, vec![r]).await?.pop().ok_or(Error::NotFound)?;
+    Ok(ReportSaved { report, replaced })
 }
 
 pub async fn update(state: &AppState, actor: &Actor, id: i64, patch: ReportPatch) -> Result<ReportInfo> {
@@ -181,6 +243,10 @@ pub async fn update(state: &AppState, actor: &Actor, id: i64, patch: ReportPatch
     if let Some(d) = &patch.description {
         m.description = Set(description(d.as_deref())?);
         changes.push("description");
+    }
+    if let Some(n) = &patch.notes {
+        m.notes = Set(notes(n.as_deref())?);
+        changes.push("notes");
     }
     if let Some(v) = &patch.rust_dos_version {
         m.rust_dos_version = Set(rust_dos_version(v.as_deref())?);

@@ -291,3 +291,85 @@ async fn windows_flow() {
     assert_eq!(schema["version"], 2);
     assert!(schema["settings"].as_array().unwrap().iter().any(|s| s["key"] == "win32_depth" && s["group"] == "windows"));
 }
+
+#[tokio::test]
+async fn a_key_replaces_its_report_and_corrects_its_game() {
+    let (c, state) = Client::new().await;
+    users::create_direct(&state.db, "admin", "correct horse battery", Role::Admin).await.unwrap();
+    let (_, login) = c.post("/api/v1/auth/login", json!({"username": "admin", "password": "correct horse battery"}), "198.51.100.9").await;
+    let token = login["token"].as_str().unwrap().to_string();
+    let key = "0f8fad5b-d9cb-469f-a165-70867728950e";
+
+    // A profile adds its game, with a year that is wrong.
+    let (s, game) = c.post("/api/v1/games", json!({"name": "Jazz Jackrabbit", "year": 1995, "key": key}), "203.0.113.1").await;
+    assert_eq!(s, StatusCode::OK, "{game}");
+    let (s, _) = c.post("/api/v1/games", json!({"name": "Other", "key": "short"}), "203.0.113.1").await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "a key is long enough not to be guessed");
+
+    let report = |rating: &str, mem: &str, notes: &str| {
+        json!({
+            "game": "jazz-jackrabbit", "rating": rating, "key": key, "notes": notes,
+            "year": 1994, "publisher": "Epic MegaGames",
+            "settings": {"emulator": {"memsize": mem}},
+        })
+    };
+    let (s, first) = c.post("/api/v1/reports", report("yellow", "8", "Music stutters"), "203.0.113.2").await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    assert_eq!(first["replaced"], false);
+    assert_eq!(first["notes"], "Music stutters");
+    let (_, g) = c.get("/api/v1/games/jazz-jackrabbit").await;
+    assert_eq!((g["year"].clone(), g["publisher"].clone()), (json!(1994), json!("Epic MegaGames")), "the adder corrects its game");
+
+    // The same key again, from elsewhere: the same report, changed.
+    let (s, second) = c.post("/api/v1/reports", report("green", "16", "Fine with sbtype=sb16"), "203.0.113.3").await;
+    assert_eq!(s, StatusCode::OK, "{second}");
+    assert_eq!(second["replaced"], true);
+    assert_eq!(second["id"], first["id"]);
+    assert_eq!(second["rating"], "green");
+    assert_eq!(second["notes"], "Fine with sbtype=sb16");
+    let (_, reports) = c.get("/api/v1/games/jazz-jackrabbit/reports").await;
+    assert_eq!(reports.as_array().unwrap().len(), 1);
+    assert_eq!(reports[0]["settings"][0]["value"], "16");
+    assert!(reports[0].get("owner_key").is_none() && !reports.to_string().contains(key), "the key is never shown");
+
+    // Another key fills in only what the game lacks.
+    let (s, other) = c
+        .post(
+            "/api/v1/reports",
+            json!({"game": "jazz-jackrabbit", "rating": "green", "key": "11111111-2222-3333-4444-555555555555", "year": 1990}),
+            "203.0.113.4",
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{other}");
+    assert_eq!(other["replaced"], false);
+    let (_, g) = c.get("/api/v1/games/jazz-jackrabbit").await;
+    assert_eq!(g["year"], 1994);
+
+    // Once staff edit the game, its adder's reports no longer change it.
+    let (s, _) = c.call(Method::PATCH, "/api/v1/games/jazz-jackrabbit", Some(json!({"year": 1994})), Some(&token), "198.51.100.9", None).await;
+    assert_eq!(s, StatusCode::OK);
+    c.post("/api/v1/reports", json!({"game": "jazz-jackrabbit", "rating": "green", "key": key, "year": 1999}), "203.0.113.5").await;
+    let (_, g) = c.get("/api/v1/games/jazz-jackrabbit").await;
+    assert_eq!(g["year"], 1994);
+
+    // A blessed report stays as blessed: the key starts a new one.
+    let id = first["id"].as_i64().unwrap();
+    let (s, _) = c.call(Method::POST, &format!("/api/v1/reports/{id}/bless"), None, Some(&token), "198.51.100.9", None).await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, third) = c.post("/api/v1/reports", report("red", "4", "Crashes now"), "203.0.113.6").await;
+    assert_eq!(third["replaced"], false);
+    assert_ne!(third["id"], first["id"]);
+    let (_, blessed) = c.get(&format!("/api/v1/reports/{id}")).await;
+    assert_eq!(blessed["rating"], "green");
+    let (_, fourth) = c.post("/api/v1/reports", report("green", "4", "Fixed"), "203.0.113.7").await;
+    assert_eq!((fourth["replaced"].clone(), fourth["id"].clone()), (json!(true), third["id"].clone()), "the key went with the new report");
+
+    // One profile running another game keeps a report on each.
+    c.post("/api/v1/games", json!({"name": "Jill of the Jungle"}), "203.0.113.8").await;
+    let (_, jill) = c.post("/api/v1/reports", json!({"game": "jill-of-the-jungle", "rating": "green", "key": key}), "203.0.113.8").await;
+    assert_eq!(jill["replaced"], false, "{jill}");
+    let (_, again) = c.post("/api/v1/reports", report("yellow", "8", "Back to Jazz"), "203.0.113.9").await;
+    assert_eq!((again["replaced"].clone(), again["id"].clone()), (json!(true), third["id"].clone()));
+    let (_, jill_reports) = c.get("/api/v1/games/jill-of-the-jungle/reports").await;
+    assert_eq!(jill_reports[0]["id"], jill["id"]);
+}

@@ -1,5 +1,5 @@
 use super::game::Field;
-use crate::app::components::{ActionError, Dialog, PlatformSelect, Window};
+use crate::app::components::{ActionError, Dialog, PasteConfig, PlatformSelect, Window};
 use crate::app::fns::{AddVersion, CreateGame};
 use leptos::prelude::*;
 use leptos_meta::Title;
@@ -29,6 +29,8 @@ pub fn NewGamePage() -> impl IntoView {
         <div class="row-form">
             <Dialog title="New game" class="form-dialog">
                 <ActionForm action=create attr:class="form">
+                    <PasteConfig />
+                    <input type="hidden" id="f-key" name="key" value="" />
                     <fieldset>
                         <legend>"Game"</legend>
                         <Field label="Name" name="name" required=true placeholder="Commander Keen 4" />

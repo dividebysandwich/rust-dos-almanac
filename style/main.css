@@ -422,6 +422,12 @@ pre.code {
 .report-meta { color: var(--cyan); }
 .report-meta .staff { color: var(--yellow); }
 .description { color: var(--white); white-space: pre-wrap; line-height: 1.25; }
+.notes { color: var(--cyan); white-space: pre-wrap; line-height: 1.25; }
+.notes::before { content: "\201C"; }
+.notes::after { content: "\201D"; }
+.paste-config { grid-column: 1 / -1; margin-bottom: 1em; }
+.paste-config summary { cursor: pointer; color: var(--yellow); }
+.paste-config[open] summary { margin-bottom: 0.5em; }
 .source-link { color: var(--lmagenta); text-decoration: none; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 1em 1ch; }

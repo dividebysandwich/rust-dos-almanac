@@ -447,6 +447,8 @@ fn ReportCard(slug: String, report: ReportInfo) -> impl IntoView {
             </div>
             <p class="report-meta">
                 {date(report.created_at)}
+                {(date(report.updated_at) != date(report.created_at) && report.updated_at > report.created_at)
+                    .then(|| format!(" (updated {})", date(report.updated_at)))}
                 {report.version_label.clone().map(|l| format!(" · {l}"))}
                 {report.rust_dos_version.clone().map(|v| format!(" · Rust-DOS {v}"))}
                 " · "
@@ -456,6 +458,7 @@ fn ReportCard(slug: String, report: ReportInfo) -> impl IntoView {
                 }}
             </p>
             {report.description.clone().map(|d| view! { <p class="description">{d}</p> })}
+            {report.notes.clone().map(|n| view! { <p class="notes">{n}</p> })}
             <SettingChips settings=report.settings.clone() />
             {move || {
                 session

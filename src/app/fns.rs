@@ -1,4 +1,7 @@
 #![cfg_attr(not(feature = "ssr"), allow(dead_code, unused_imports))]
+// A form's server function takes its fields as arguments, as many as the
+// form has.
+#![allow(clippy::too_many_arguments)]
 
 //! Server functions for the web UI. Each one is a thin wrapper around the
 //! service layer the JSON API uses too. Form-facing ones take strings, as a
@@ -140,6 +143,7 @@ pub async fn create_game(
     platform: String,
     files: String,
     ra_md5: String,
+    #[server(default)] key: String,
 ) -> Result<String, ServerFnError> {
     let (state, actor) = ctx().await?;
     let platform = parse_platform(&platform)?;
@@ -153,7 +157,7 @@ pub async fn create_game(
     } else {
         None
     };
-    let input = NewGame { name, year: parse_year(&year)?, publisher: opt(&publisher), aliases: parse_list(&aliases), version };
+    let input = NewGame { name, year: parse_year(&year)?, publisher: opt(&publisher), aliases: parse_list(&aliases), version, key: opt(&key) };
     let g = games::create(&state, &actor, input).await?;
     leptos_axum::redirect(&format!("/games/{}", g.slug));
     Ok(g.slug)
@@ -175,6 +179,10 @@ pub async fn submit_report(
     rating: String,
     rust_dos_version: String,
     #[server(default)] description: String,
+    #[server(default)] notes: String,
+    #[server(default)] key: String,
+    #[server(default)] year: String,
+    #[server(default)] publisher: String,
     #[server(default)] settings: HashMap<String, String>,
 ) -> Result<i64, ServerFnError> {
     let (state, actor) = ctx().await?;
@@ -186,8 +194,12 @@ pub async fn submit_report(
         settings: settings_from_form(settings),
         rust_dos_version: opt(&rust_dos_version),
         description: opt(&description),
+        notes: opt(&notes),
+        key: opt(&key),
+        year: parse_year(&year)?,
+        publisher: opt(&publisher),
     };
-    let r = reports::create(&state, &actor, input).await?;
+    let r = reports::create(&state, &actor, input).await?.report;
     let v = r.version_id.map(|v| format!("?v={v}")).unwrap_or_default();
     leptos_axum::redirect(&format!("/games/{game}{v}#report-{}", r.id));
     Ok(r.id)
@@ -201,6 +213,7 @@ pub async fn edit_report(
     rating: String,
     rust_dos_version: String,
     #[server(default)] description: String,
+    #[server(default)] notes: String,
     #[server(default)] settings: HashMap<String, String>,
 ) -> Result<(), ServerFnError> {
     let (state, actor) = ctx().await?;
@@ -209,6 +222,7 @@ pub async fn edit_report(
         rating: Some(rating),
         version_id: Some(parse_id(&version)?),
         description: Some(opt(&description)),
+        notes: Some(opt(&notes)),
         settings: Some(settings_from_form(settings)),
         rust_dos_version: Some(opt(&rust_dos_version)),
         hidden: None,

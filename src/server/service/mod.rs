@@ -14,6 +14,17 @@ use sea_orm::sea_query::SimpleExpr;
 use sea_orm::{ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set};
 use std::collections::HashMap;
 
+/// The SHA-256 of a sender's key (`model::valid_key`), as reports and
+/// games keep it; None without one.
+pub fn key_hash(key: Option<&str>) -> Result<Option<String>> {
+    use sha2::{Digest, Sha256};
+    let Some(key) = key.map(str::trim).filter(|k| !k.is_empty()) else { return Ok(None) };
+    if !crate::model::valid_key(key) {
+        return Err(Error::invalid("the key is 16 to 64 letters, digits and dashes, such as a UUID"));
+    }
+    Ok(Some(hex::encode(Sha256::digest(key.to_ascii_lowercase().as_bytes()))))
+}
+
 pub fn id32(id: i64) -> Result<i32> {
     i32::try_from(id).map_err(|_| Error::NotFound)
 }

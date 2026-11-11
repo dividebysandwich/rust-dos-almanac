@@ -1,4 +1,4 @@
-use super::{id32, log_action, ratings_by};
+use super::{id32, key_hash, log_action, ratings_by};
 use crate::model::*;
 use crate::server::auth::{Actor, now};
 use crate::server::entities::{game, game_version, report, version_archive, version_file};
@@ -27,14 +27,14 @@ fn text(field: &str, value: &str, max: usize) -> Result<String> {
     Ok(v.to_string())
 }
 
-fn opt_text(field: &str, value: Option<&str>, max: usize) -> Result<Option<String>> {
+pub(super) fn opt_text(field: &str, value: Option<&str>, max: usize) -> Result<Option<String>> {
     match value.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) => text(field, v, max).map(Some),
         None => Ok(None),
     }
 }
 
-fn year(y: Option<i32>) -> Result<Option<i32>> {
+pub(super) fn year(y: Option<i32>) -> Result<Option<i32>> {
     match y {
         Some(y) if !(1970..=2035).contains(&y) => Err(Error::invalid("year must be between 1970 and 2035")),
         y => Ok(y),
@@ -303,6 +303,7 @@ pub async fn create(state: &AppState, actor: &Actor, input: NewGame) -> Result<G
     let publisher = opt_text("publisher", input.publisher.as_deref(), 200)?;
     let year = year(input.year)?;
     let aliases = aliases(&input.aliases)?;
+    let owner_key = key_hash(input.key.as_deref())?;
     let db = &state.db;
     if game::Entity::find().filter(game::Column::Slug.eq(slug.as_str())).one(db).await?.is_some() {
         return Err(Error::Conflict(format!("the game already exists as '{slug}'; add a version to it instead")));
@@ -320,6 +321,7 @@ pub async fn create(state: &AppState, actor: &Actor, input: NewGame) -> Result<G
         publisher: Set(publisher),
         hidden: Set(false),
         source_hash: Set((!actor.is_staff()).then(|| actor.source.clone())),
+        owner_key: Set(owner_key),
         created_at: Set(t),
         updated_at: Set(t),
         ..Default::default()
@@ -336,7 +338,40 @@ pub async fn create(state: &AppState, actor: &Actor, input: NewGame) -> Result<G
     detail(db, actor, g).await
 }
 
-async fn touch(db: &impl sea_orm::ConnectionTrait, game_id: i32) -> Result<()> {
+/// A report's year and publisher for the game `g`, already checked: they
+/// fill in what it lacks, and replace what is there when `owner_key`
+/// (the report's key, hashed) added the game. Whether anything changed.
+pub(super) async fn fill_in(
+    db: &impl sea_orm::ConnectionTrait,
+    g: &game::Model,
+    owner_key: Option<&str>,
+    year: Option<i32>,
+    publisher: Option<&str>,
+) -> Result<bool> {
+    let owner = owner_key.is_some() && g.owner_key.as_deref() == owner_key;
+    let mut m = g.clone().into_active_model();
+    let mut changed = false;
+    if let Some(y) = year
+        && (g.year.is_none() || owner)
+        && g.year != Some(y)
+    {
+        m.year = Set(Some(y));
+        changed = true;
+    }
+    if let Some(p) = publisher
+        && (g.publisher.is_none() || owner)
+        && g.publisher.as_deref() != Some(p)
+    {
+        m.publisher = Set(Some(p.to_string()));
+        changed = true;
+    }
+    if changed {
+        m.update(db).await?;
+    }
+    Ok(changed)
+}
+
+pub(super) async fn touch(db: &impl sea_orm::ConnectionTrait, game_id: i32) -> Result<()> {
     game::Entity::update_many()
         .col_expr(game::Column::UpdatedAt, sea_orm::sea_query::Expr::value(now()))
         .filter(game::Column::Id.eq(game_id))
@@ -394,6 +429,8 @@ pub async fn update(state: &AppState, actor: &Actor, slug: &str, patch: GamePatc
         changes.push(if h { "hidden" } else { "shown" });
     }
     m.search_text = Set(search_text(&name, &g.slug, &alias_list));
+    // What staff wrote stays: the adder's reports no longer correct it.
+    m.owner_key = Set(None);
     m.updated_at = Set(now());
     let g = m.update(db).await?;
     let action = match patch.hidden {

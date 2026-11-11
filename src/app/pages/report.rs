@@ -1,4 +1,5 @@
-use crate::app::components::{ActionError, Dialog, ErrorLine, Light, Window, error_text};
+use crate::app::components::{ActionError, Dialog, ErrorLine, Light, PasteConfig, Window, error_text};
+use crate::app::pages::game::Field;
 use crate::app::fns::{EditReport, SubmitReport, get_game, get_report};
 use crate::app::use_session;
 use crate::model::{GameDetail, Rating, ReportInfo};
@@ -29,9 +30,16 @@ fn ReportFields(game: GameDetail, version: Option<i64>, existing: Option<ReportI
     let rating = existing.as_ref().map(|r| r.rating);
     let rdv = existing.as_ref().and_then(|r| r.rust_dos_version.clone()).unwrap_or_default();
     let description = existing.as_ref().and_then(|r| r.description.clone()).unwrap_or_default();
+    let notes = existing.as_ref().and_then(|r| r.notes.clone()).unwrap_or_default();
+    // A new report may fill in what the almanac doesn't know of the game.
+    let new = existing.is_none();
+    let ask_year = new && game.year.is_none();
+    let ask_publisher = new && game.publisher.is_none();
 
     view! {
+        {new.then(|| view! { <PasteConfig /> })}
         <input type="hidden" name="game" value=game.slug.clone() />
+        {new.then(|| view! { <input type="hidden" id="f-key" name="key" value="" /> })}
         <fieldset class="stoplight">
             <legend>"How well does it run?"</legend>
             <div class="cluster">
@@ -67,6 +75,22 @@ fn ReportFields(game: GameDetail, version: Option<i64>, existing: Option<ReportI
         <div class="field">
             <label for="f-rdv">"Rust-DOS version"</label>
             <input id="f-rdv" name="rust_dos_version" class="input" value=rdv placeholder="1.7.5" autocomplete="off" />
+        </div>
+        {(ask_year || ask_publisher)
+            .then(|| {
+                view! {
+                    <fieldset>
+                        <legend>"The game, if you know"</legend>
+                        {ask_year.then(|| view! { <Field label="Year" name="year" kind="number" placeholder="1991" /> })}
+                        {ask_publisher.then(|| view! { <Field label="Publisher" name="publisher" placeholder="Apogee" /> })}
+                    </fieldset>
+                }
+            })}
+        <div class="field wide">
+            <label for="f-notes">"Notes"</label>
+            <textarea id="f-notes" name="notes" class="input" rows="3" maxlength="2000" placeholder="What worked, what didn't, what you had to change">
+                {notes}
+            </textarea>
         </div>
         <p class="hint">"Settings you leave at “—” count as not given. Only fill in what you actually used."</p>
         <div class="settings-grid">

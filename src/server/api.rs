@@ -135,7 +135,7 @@ async fn update_version(State(s): State<AppState>, actor: Actor, Path(id): Path<
     Ok(Json(games::update_version(&s, &actor, id, p).await?))
 }
 
-async fn create_report(State(s): State<AppState>, actor: Actor, Json(r): Json<NewReport>) -> Result<Json<ReportInfo>> {
+async fn create_report(State(s): State<AppState>, actor: Actor, Json(r): Json<NewReport>) -> Result<Json<ReportSaved>> {
     Ok(Json(reports::create(&s, &actor, r).await?))
 }
 

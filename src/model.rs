@@ -288,6 +288,9 @@ pub struct ReportInfo {
     pub version_label: Option<String>,
     pub rating: Rating,
     pub description: Option<String>,
+    /// The player's own words about how it went.
+    #[serde(default)]
+    pub notes: Option<String>,
     pub rust_dos_version: Option<String>,
     pub settings: Vec<Setting>,
     pub hidden: bool,
@@ -298,6 +301,18 @@ pub struct ReportInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     pub created_at: i64,
+    /// When it last changed: its sender's key replaced it, or staff edited it.
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+/// What `POST /reports` answers: the report, and whether it replaced the
+/// one its key sent before rather than adding one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReportSaved {
+    #[serde(flatten)]
+    pub report: ReportInfo,
+    pub replaced: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -375,6 +390,10 @@ pub struct NewGame {
     pub aliases: Vec<String>,
     #[serde(default)]
     pub version: Option<NewVersion>,
+    /// The adder's key (see `NewReport::key`): their reports may correct
+    /// the year and publisher until staff edit the game.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -391,6 +410,20 @@ pub struct NewReport {
     /// Staff only; ignored for anonymous submissions.
     #[serde(default)]
     pub description: Option<String>,
+    /// The player's own words about how it went, shown with the report.
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// A secret of the sender's, such as a Rust-DOS game profile's UUID
+    /// (see `valid_key`): a report with a key replaces the one sent with
+    /// the same key before. Only its SHA-256 is stored.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// The game's year and publisher as the sender knows them: they fill
+    /// in what the game lacks, and correct what the sender's key added.
+    #[serde(default)]
+    pub year: Option<i32>,
+    #[serde(default)]
+    pub publisher: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -419,6 +452,7 @@ pub struct ReportPatch {
     pub rating: Option<Rating>,
     pub version_id: Option<Option<i64>>,
     pub description: Option<Option<String>>,
+    pub notes: Option<Option<String>>,
     /// Replaces all settings.
     pub settings: Option<SettingsMap>,
     pub rust_dos_version: Option<Option<String>>,
@@ -499,6 +533,85 @@ pub fn schema_info() -> SchemaInfo {
             })
             .collect(),
     }
+}
+
+/// Whether `key` can be a report's key: 16 to 64 letters, digits and
+/// dashes, as a UUID is. Shorter ones would be guessed.
+pub fn valid_key(key: &str) -> bool {
+    (16..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// What a pasted Rust-DOS game profile (`games/<id>.conf`) or
+/// configuration file gives a form: `[game]`'s name, year, publisher,
+/// notes and UUID, and the settings the almanac knows, normalised.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PastedConfig {
+    pub name: Option<String>,
+    pub year: Option<i32>,
+    pub publisher: Option<String>,
+    pub notes: Option<String>,
+    /// `[game]`'s `uuid`, the report's key.
+    pub key: Option<String>,
+    /// (section, key, value), in the schema's order.
+    pub settings: Vec<(String, String, String)>,
+    /// Settings of the machine's sections that the almanac doesn't take
+    /// (host matters such as `scale`), as `section.key`.
+    pub ignored: Vec<String>,
+    /// Lines that couldn't be taken, and why.
+    pub problems: Vec<String>,
+}
+
+/// Read a Rust-DOS configuration text as `PastedConfig`. Section and key
+/// names are case-insensitive, `#` and `;` start comments, and sections
+/// the almanac doesn't take (`[drives]`, `[autoexec]`, ...) are skipped.
+pub fn parse_config(text: &str) -> PastedConfig {
+    let mut out = PastedConfig::default();
+    let mut section = String::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            section = name.trim().to_ascii_lowercase();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else { continue };
+        let (key, value) = (key.trim().to_ascii_lowercase(), value.trim());
+        let opt = || (!value.is_empty()).then(|| value.to_string());
+        if section == "game" {
+            match key.as_str() {
+                "name" => out.name = opt(),
+                "publisher" => out.publisher = opt(),
+                "notes" => out.notes = opt(),
+                "uuid" if valid_key(value) => out.key = Some(value.to_string()),
+                "uuid" => out.problems.push(format!("line {}: '{value}' isn't a UUID", n + 1)),
+                "year" if value.is_empty() => {}
+                "year" => match value.parse() {
+                    Ok(y) => out.year = Some(y),
+                    Err(_) => out.problems.push(format!("line {}: the year '{value}' isn't a number", n + 1)),
+                },
+                _ => {}
+            }
+            continue;
+        }
+        if !crate::settings_schema::SECTIONS.contains(&section.as_str()) {
+            continue;
+        }
+        let Some(def) = crate::settings_schema::find(&section, &key) else {
+            out.ignored.push(format!("{section}.{key}"));
+            continue;
+        };
+        match def.normalize(value) {
+            Ok(v) => {
+                out.settings.retain(|(s, k, _)| !(s == def.section && k == def.key));
+                out.settings.push((def.section.to_string(), def.key.to_string(), v));
+            }
+            Err(e) => out.problems.push(format!("line {}: {e}", n + 1)),
+        }
+    }
+    out.settings.sort_by_key(|(s, k, _)| crate::settings_schema::order(s, k));
+    out
 }
 
 /// `games/<slug>`: lowercase ASCII words joined by dashes.
@@ -621,5 +734,56 @@ mod tests {
         assert_eq!(files[1].md5.as_deref(), Some("d41d8cd98f00b204e9800998ecf8427e"));
         assert_eq!(parse_file_lines(&file_lines(&files)).unwrap(), files);
         assert!(parse_file_lines("A.EXE xyz").is_err());
+    }
+
+    #[test]
+    fn a_pasted_profile_gives_its_game_and_the_settings_the_almanac_takes() {
+        let text = "\
+[game]
+name=Commander Keen 4
+Year = 1991
+publisher=Apogee
+notes=Smooth with the Gravis
+uuid=0f8fad5b-d9cb-469f-a165-70867728950e
+overlay=true
+
+[emulator]
+; a comment
+CPU=586
+memsize=16MB
+scale=3
+cycles=auto 20000
+
+[Sound]
+sbbase=0x220
+sbtype=sb99
+
+[drives]
+c=/home/someone/keen
+
+[autoexec]
+KEEN4E
+";
+        let p = parse_config(text);
+        assert_eq!(p.name.as_deref(), Some("Commander Keen 4"));
+        assert_eq!(p.year, Some(1991));
+        assert_eq!(p.publisher.as_deref(), Some("Apogee"));
+        assert_eq!(p.notes.as_deref(), Some("Smooth with the Gravis"));
+        assert_eq!(p.key.as_deref(), Some("0f8fad5b-d9cb-469f-a165-70867728950e"));
+        let settings: Vec<String> = p.settings.iter().map(|(s, k, v)| format!("{s}.{k}={v}")).collect();
+        assert_eq!(settings, ["emulator.cpu=pentium", "emulator.cycles=auto 20000", "emulator.memsize=16", "sound.sbbase=220"]);
+        assert_eq!(p.ignored, ["emulator.scale"]);
+        assert_eq!(p.problems.len(), 1, "{:?}", p.problems);
+        assert!(p.problems[0].contains("sb99"));
+    }
+
+    #[test]
+    fn keys_are_long_and_plain() {
+        assert!(valid_key("0f8fad5b-d9cb-469f-a165-70867728950e"));
+        assert!(!valid_key("short"));
+        assert!(!valid_key("0f8fad5b d9cb 469f a165 70867728950e"));
+        let p = parse_config("[game]\nuuid=abc\n");
+        assert_eq!(p.key, None);
+        assert_eq!(p.problems.len(), 1);
     }
 }

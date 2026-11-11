@@ -16,6 +16,9 @@ pub struct Model {
     pub publisher: Option<String>,
     pub hidden: bool,
     pub source_hash: Option<String>,
+    /// SHA-256 of the key of whoever added it, whose reports may correct
+    /// its year and publisher; cleared once staff edit it.
+    pub owner_key: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

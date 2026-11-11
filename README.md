@@ -73,6 +73,23 @@ Other commands: `migrate`, `set-password <user>`.
 | `POST /auth/login` → `{"token"}`, then `Authorization: Bearer <token>` | | |
 | `GET/POST /users`, `PATCH /users/{id}` | admin | |
 
+`POST /reports` takes `game`, `version_id`, `rating`, `settings`,
+`rust_dos_version`, and optionally:
+
+- `notes`: the player's own words, shown with the report (2000 characters).
+- `key`: a secret of the sender's, 16 to 64 letters, digits and dashes, such
+  as the UUID of the Rust-DOS game profile it comes from. A report with a key
+  replaces the one sent with the same key before, even on another game, and
+  the answer says `"replaced": true`. A report staff blessed is left as it
+  is, and the key moves to a new report; a hidden one stays hidden. Only the
+  key's SHA-256 is stored, and it is never shown.
+- `year`, `publisher`: fill in what the game lacks. A game added with
+  `POST /games` and a `key` takes its adder's corrections from reports with
+  the same key, until staff edit it.
+
+The report and new game forms take a pasted game profile and fill
+themselves in from it, in the browser (`model::parse_config`).
+
 Report settings are `{"emulator": {"cpu": "486", "memsize": "16"}, "sound": {"sbtype": "sb16"}}`.
 They are validated against the values Rust-DOS accepts (`src/settings_schema.rs`)
 and normalised (`586` → `pentium`, `0x220` → `220`, `on` → `true`).

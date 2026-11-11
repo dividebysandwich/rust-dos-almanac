@@ -79,8 +79,9 @@ Other commands: `migrate`, `set-password <user>`.
 - `notes`: the player's own words, shown with the report (2000 characters).
 - `key`: a secret of the sender's, 16 to 64 letters, digits and dashes, such
   as the UUID of the Rust-DOS game profile it comes from. A report with a key
-  replaces the one sent with the same key before, even on another game, and
-  the answer says `"replaced": true`. A report staff blessed is left as it
+  replaces the one sent with the same key on the same game before, and the
+  answer says `"replaced": true`. A key keeps a report on each game, as one
+  profile (a Windows 98 image, say) can run several. A report staff blessed is left as it
   is, and the key moves to a new report; a hidden one stays hidden. Only the
   key's SHA-256 is stored, and it is never shown.
 - `year`, `publisher`: fill in what the game lacks. A game added with

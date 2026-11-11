@@ -13,7 +13,8 @@ pub struct Model {
     pub user_id: Option<i32>,
     pub source_hash: String,
     pub hidden: bool,
-    /// SHA-256 of the key its sender gave, which may replace it.
+    /// SHA-256 of the key its sender gave, which may replace it: unique
+    /// with the game.
     pub owner_key: Option<String>,
     /// The player's own words about how it went.
     pub notes: Option<String>,

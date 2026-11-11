@@ -363,4 +363,13 @@ async fn a_key_replaces_its_report_and_corrects_its_game() {
     assert_eq!(blessed["rating"], "green");
     let (_, fourth) = c.post("/api/v1/reports", report("green", "4", "Fixed"), "203.0.113.7").await;
     assert_eq!((fourth["replaced"].clone(), fourth["id"].clone()), (json!(true), third["id"].clone()), "the key went with the new report");
+
+    // One profile running another game keeps a report on each.
+    c.post("/api/v1/games", json!({"name": "Jill of the Jungle"}), "203.0.113.8").await;
+    let (_, jill) = c.post("/api/v1/reports", json!({"game": "jill-of-the-jungle", "rating": "green", "key": key}), "203.0.113.8").await;
+    assert_eq!(jill["replaced"], false, "{jill}");
+    let (_, again) = c.post("/api/v1/reports", report("yellow", "8", "Back to Jazz"), "203.0.113.9").await;
+    assert_eq!((again["replaced"].clone(), again["id"].clone()), (json!(true), third["id"].clone()));
+    let (_, jill_reports) = c.get("/api/v1/games/jill-of-the-jungle/reports").await;
+    assert_eq!(jill_reports[0]["id"], jill["id"]);
 }

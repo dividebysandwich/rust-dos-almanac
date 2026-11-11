@@ -137,9 +137,10 @@ pub async fn get(db: &DatabaseConnection, actor: &Actor, id: i64) -> Result<Repo
     infos(db, actor, vec![r]).await?.pop().ok_or(Error::NotFound)
 }
 
-/// Add a report, or replace the one sent before with the same key. A
-/// report staff blessed stays as they blessed it: the key moves to a new
-/// report instead. A hidden one stays hidden.
+/// Add a report, or replace the one sent before with the same key on the
+/// same game: a key has a report on each game it reported, as one profile
+/// can run several games. A report staff blessed stays as they blessed
+/// it: the key moves to a new report instead. A hidden one stays hidden.
 pub async fn create(state: &AppState, actor: &Actor, input: NewReport) -> Result<ReportSaved> {
     let db = &state.db;
     let g = find_visible(db, actor, input.game.trim()).await?;
@@ -156,7 +157,13 @@ pub async fn create(state: &AppState, actor: &Actor, input: NewReport) -> Result
     let year = games::year(input.year)?;
     let publisher = games::opt_text("publisher", input.publisher.as_deref(), 200)?;
     let before = match &owner_key {
-        Some(k) => report::Entity::find().filter(report::Column::OwnerKey.eq(k.as_str())).one(db).await?,
+        Some(k) => {
+            report::Entity::find()
+                .filter(report::Column::OwnerKey.eq(k.as_str()))
+                .filter(report::Column::GameId.eq(g.id))
+                .one(db)
+                .await?
+        }
         None => None,
     };
     let blessed = match &before {
@@ -169,9 +176,7 @@ pub async fn create(state: &AppState, actor: &Actor, input: NewReport) -> Result
     let t = now();
     let (r, replaced) = match before {
         Some(old) if !blessed => {
-            let old_game = old.game_id;
             let mut m = old.into_active_model();
-            m.game_id = Set(g.id);
             m.version_id = Set(version_id);
             m.rating = Set(input.rating.as_str().into());
             if actor.is_staff() {
@@ -181,11 +186,7 @@ pub async fn create(state: &AppState, actor: &Actor, input: NewReport) -> Result
             m.rust_dos_version = Set(rdv);
             m.source_hash = Set(actor.source.clone());
             m.updated_at = Set(t);
-            let r = m.update(&txn).await?;
-            if old_game != g.id {
-                games::touch(&txn, old_game).await?;
-            }
-            (r, true)
+            (m.update(&txn).await?, true)
         }
         before => {
             if let Some(old) = before {

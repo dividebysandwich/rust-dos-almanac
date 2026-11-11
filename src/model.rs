@@ -415,7 +415,7 @@ pub struct NewReport {
     pub notes: Option<String>,
     /// A secret of the sender's, such as a Rust-DOS game profile's UUID
     /// (see `valid_key`): a report with a key replaces the one sent with
-    /// the same key before. Only its SHA-256 is stored.
+    /// the same key on the same game before. Only its SHA-256 is stored.
     #[serde(default)]
     pub key: Option<String>,
     /// The game's year and publisher as the sender knows them: they fill

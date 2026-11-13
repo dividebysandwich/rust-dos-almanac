@@ -559,6 +559,9 @@ pub struct PastedConfig {
     pub ignored: Vec<String>,
     /// Lines that couldn't be taken, and why.
     pub problems: Vec<String>,
+    /// Settings whose value came under an old name, as `section.key`, so a
+    /// later line under the current name replaces it.
+    from_old: Vec<String>,
 }
 
 /// Read a Rust-DOS configuration text as `PastedConfig`. Section and key
@@ -602,8 +605,18 @@ pub fn parse_config(text: &str) -> PastedConfig {
             out.ignored.push(format!("{section}.{key}"));
             continue;
         };
+        // Under an old name, a value already given under the current one stays.
+        let old = crate::settings_schema::is_old_name(&section, &key);
+        if old && out.settings.iter().any(|(s, k, _)| s == def.section && k == def.key) && !out.from_old.contains(&def.id()) {
+            continue;
+        }
         match def.normalize(value) {
             Ok(v) => {
+                if old {
+                    out.from_old.push(def.id());
+                } else {
+                    out.from_old.retain(|id| *id != def.id());
+                }
                 out.settings.retain(|(s, k, _)| !(s == def.section && k == def.key));
                 out.settings.push((def.section.to_string(), def.key.to_string(), v));
             }
@@ -775,6 +788,18 @@ KEEN4E
         assert_eq!(p.ignored, ["emulator.scale"]);
         assert_eq!(p.problems.len(), 1, "{:?}", p.problems);
         assert!(p.problems[0].contains("sb99"));
+    }
+
+    #[test]
+    fn a_pasted_voodoo_fps_cap_is_taken_as_fps_cap() {
+        let settings = |text: &str| parse_config(text).settings.into_iter().map(|(s, k, v)| format!("{s}.{k}={v}")).collect::<Vec<_>>();
+        assert_eq!(settings("[emulator]\nvoodoo_fps_cap=60\n"), ["emulator.fps_cap=60"]);
+        assert_eq!(settings("[emulator]\nfps_cap=off\nvoodoo_fps_cap=60\n"), ["emulator.fps_cap=off"]);
+        assert_eq!(settings("[emulator]\nvoodoo_fps_cap=60\nfps_cap=off\n"), ["emulator.fps_cap=off"]);
+        assert_eq!(settings("[emulator]\nvoodoo_fps_cap=30\nvoodoo_fps_cap=60\n"), ["emulator.fps_cap=60"]);
+        let p = parse_config("[emulator]\nfps_cap=300\n");
+        assert!(p.settings.is_empty());
+        assert_eq!(p.problems.len(), 1);
     }
 
     #[test]

@@ -60,7 +60,7 @@ Other commands: `migrate`, `set-password <user>`.
 
 | Method & path | Who | |
 |---|---|---|
-| `GET /schema` | all | Known settings, allowed values and form groups; `version` bumps when they change (2 added `win32_depth`) |
+| `GET /schema` | all | Known settings, allowed values and form groups; `version` bumps when they change (2 added `win32_depth`, 3 `fps_cap`) |
 | `GET /games?q=&platform=all\|dos\|windows&page=` | all | Search name, aliases and slug; `platform` keeps games with a version of that platform |
 | `POST /games/lookup` | all | `{"ra_md5": "…", "files": [{"name", "size", "crc32", "md5", "sha1"}]}` → matching versions with their `platform`, best first |
 | `GET /games/{slug}` | all | Game, versions, files, rating counts |
@@ -102,6 +102,14 @@ Versions take `"platform": "dos" | "win16" | "win32"` in `POST /games`
 `win32_version` (`95`, `98`, `98se`) and `win32_depth` (`auto`, `8`, `16`).
 Rust-DOS's `win32_dlls*` and `win32_trace`, and a profile's `[game] windows=`
 and `[install]`, are host or launch matters and are not accepted.
+
+`emulator.fps_cap` is Rust-DOS's frame rate cap for whichever card shows the
+picture: `off` (`0` is taken as `off`) or 10 to 240, as Rust-DOS's parser
+accepts it. Rust-DOS caps at 60 by default, and benchmarks and timedemos
+report at most the cap, so `off` is a recommendation of its own. The old
+name `voodoo_fps_cap` is accepted in reports and pasted profiles and stored
+as `fps_cap`; given under both names, `fps_cap` wins. Recommendations only
+ever carry `fps_cap`.
 
 ## Tests
 

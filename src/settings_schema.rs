@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 /// Bumped whenever a key or a value domain changes, so clients can notice.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Domain {
@@ -25,6 +25,8 @@ pub enum Domain {
     Cycles,
     /// "6.22", "7.1", "5".
     DosVersion,
+    /// A frame rate cap: `off` (or `0`), or 10 to 240 frames a second.
+    FpsCap,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -63,12 +65,13 @@ impl SettingDef {
             Domain::HexPort(values) => Some(values.iter().map(|v| format!("{v:x}")).collect()),
             Domain::MemSize => Some(MEMSIZE_PRESETS.iter().map(|v| v.to_string()).collect()),
             Domain::DosVersion => Some(DOS_PRESETS.iter().map(|v| v.to_string()).collect()),
+            Domain::FpsCap => Some(std::iter::once("off".to_string()).chain(FPS_CAP_PRESETS.iter().map(|v| v.to_string())).collect()),
             Domain::Cycles => None,
         }
     }
 
     pub fn is_numeric(&self) -> bool {
-        matches!(self.domain, Domain::MemSize | Domain::IntSet(_) | Domain::Cycles)
+        matches!(self.domain, Domain::MemSize | Domain::IntSet(_) | Domain::Cycles | Domain::FpsCap)
     }
 
     /// The canonical form of `raw`, or why it isn't valid.
@@ -124,13 +127,20 @@ impl SettingDef {
                 let n = if minor.len() == 1 { n * 10 } else { n };
                 Ok(format!("{major}.{n:02}"))
             }
+            Domain::FpsCap => match value.as_str() {
+                "off" | "0" => Ok("off".into()),
+                _ => {
+                    let n: u32 = value.parse().map_err(|_| bad())?;
+                    if (MIN_FPS_CAP..=MAX_FPS_CAP).contains(&n) { Ok(n.to_string()) } else { Err(bad()) }
+                }
+            },
         }
     }
 
     /// A number to order values by when picking a median, if there is one.
     pub fn numeric_value(&self, normalized: &str) -> Option<f64> {
         match self.domain {
-            Domain::MemSize | Domain::IntSet(_) => normalized.parse().ok(),
+            Domain::MemSize | Domain::IntSet(_) | Domain::FpsCap => normalized.parse().ok(),
             Domain::Cycles => normalized.trim_start_matches("auto ").parse().ok(),
             Domain::HexPort(_) => u16::from_str_radix(normalized, 16).ok().map(f64::from),
             Domain::DosVersion => normalized.parse().ok(),
@@ -143,6 +153,9 @@ pub const MIN_MEMSIZE: i64 = 2;
 pub const MAX_MEMSIZE: i64 = 512;
 pub const MIN_CYCLES: u32 = 100;
 pub const MAX_CYCLES: u32 = 2_000_000;
+pub const MIN_FPS_CAP: u32 = 10;
+pub const MAX_FPS_CAP: u32 = 240;
+const FPS_CAP_PRESETS: &[u32] = &[30, 35, 50, 60, 70, 72, 75, 85, 100, 120, 144];
 const MEMSIZE_PRESETS: &[i64] = &[2, 4, 8, 16, 32, 48, 64, 128, 256, 512];
 const DOS_PRESETS: &[&str] = &["5.00", "6.22", "7.00", "7.10"];
 
@@ -184,6 +197,7 @@ pub static SETTINGS: &[SettingDef] = &[
     SettingDef { section: "emulator", key: "win32", label: "Built-in Windows", domain: Domain::Bool },
     SettingDef { section: "emulator", key: "win32_version", label: "Windows version", domain: Domain::Choice(&["95", "98", "98se"], &[]) },
     SettingDef { section: "emulator", key: "win32_depth", label: "Windows colour depth", domain: Domain::Choice(&["auto", "8", "16"], &[]) },
+    SettingDef { section: "emulator", key: "fps_cap", label: "Frame rate cap", domain: Domain::FpsCap },
     SettingDef { section: "emulator", key: "voodoo", label: "3dfx Voodoo", domain: Domain::Bool },
     SettingDef { section: "emulator", key: "voodoo_model", label: "Voodoo model", domain: Domain::Choice(&["voodoo1", "voodoo2"], &[]) },
     SettingDef { section: "emulator", key: "voodoo_memory", label: "Voodoo memory (MB)", domain: Domain::IntSet(&[4, 8, 12]) },
@@ -243,9 +257,21 @@ pub static SETTINGS: &[SettingDef] = &[
 /// Sections in the order they appear in a config file.
 pub const SECTIONS: &[&str] = &["emulator", "sound", "joystick"];
 
+/// Old names Rust-DOS still reads, as (section, old key, current key).
+/// [`find`] takes them and gives the current setting; nothing is stored or
+/// sent under an old name.
+pub const OLD_NAMES: &[(&str, &str, &str)] = &[("emulator", "voodoo_fps_cap", "fps_cap")];
+
 pub fn find(section: &str, key: &str) -> Option<&'static SettingDef> {
     let (section, key) = (section.trim().to_ascii_lowercase(), key.trim().to_ascii_lowercase());
+    let key = OLD_NAMES.iter().find(|(s, old, _)| *s == section && *old == key).map_or(key.as_str(), |(_, _, new)| new);
     SETTINGS.iter().find(|d| d.section == section && d.key == key)
+}
+
+/// Whether `key` is an old name of a setting.
+pub fn is_old_name(section: &str, key: &str) -> bool {
+    let (section, key) = (section.trim().to_ascii_lowercase(), key.trim().to_ascii_lowercase());
+    OLD_NAMES.iter().any(|(s, old, _)| *s == section && *old == key)
 }
 
 /// Position of a setting in [`SETTINGS`], for stable ordering.
@@ -255,15 +281,22 @@ pub fn order(section: &str, key: &str) -> usize {
 
 /// `{section: {key: value}}` as submitted, validated and normalised into
 /// `(section, key, value)` triples in schema order. Empty values are dropped.
+/// A setting under an old name takes its current one; given under both, the
+/// current name wins.
 pub fn normalize_all(input: &BTreeMap<String, BTreeMap<String, String>>) -> Result<Vec<(String, String, String)>, String> {
-    let mut out = Vec::new();
+    let mut out: Vec<(String, String, String)> = Vec::new();
     for (section, keys) in input {
+        // Old names first, so the current name's value replaces theirs.
+        let mut keys: Vec<_> = keys.iter().collect();
+        keys.sort_by_key(|(key, _)| !is_old_name(section, key));
         for (key, value) in keys {
             if value.trim().is_empty() {
                 continue;
             }
             let def = find(section, key).ok_or_else(|| format!("unknown setting {section}.{key}"))?;
-            out.push((def.section.to_string(), def.key.to_string(), def.normalize(value)?));
+            let value = def.normalize(value)?;
+            out.retain(|(s, k, _)| !(s == def.section && k == def.key));
+            out.push((def.section.to_string(), def.key.to_string(), value));
         }
     }
     out.sort_by_key(|(s, k, _)| order(s, k));
@@ -378,6 +411,39 @@ mod tests {
         assert_eq!(norm("emulator", "win32_depth", "8").unwrap(), "8");
         assert!(norm("emulator", "win32_depth", "24").is_err());
         assert!(norm("emulator", "win32_depth", "32").is_err());
+    }
+
+    #[test]
+    fn fps_cap_takes_off_or_10_to_240() {
+        assert_eq!(norm("emulator", "fps_cap", "OFF").unwrap(), "off");
+        assert_eq!(norm("emulator", "fps_cap", "0").unwrap(), "off");
+        assert_eq!(norm("emulator", "fps_cap", " 60 ").unwrap(), "60");
+        assert_eq!(norm("emulator", "fps_cap", "10").unwrap(), "10");
+        assert_eq!(norm("emulator", "fps_cap", "240").unwrap(), "240");
+        for bad in ["9", "241", "-1", "60fps", "on", "", "1e2"] {
+            assert!(norm("emulator", "fps_cap", bad).is_err(), "{bad}");
+        }
+        let def = find("emulator", "fps_cap").unwrap();
+        assert_eq!(def.numeric_value("60"), Some(60.0));
+        assert_eq!(def.numeric_value("off"), None);
+        assert_eq!(def.group(), "machine");
+    }
+
+    #[test]
+    fn voodoo_fps_cap_is_an_old_name_of_fps_cap() {
+        assert_eq!(find("emulator", "VOODOO_FPS_CAP").unwrap().key, "fps_cap");
+        assert!(find("sound", "voodoo_fps_cap").is_none());
+        assert!(SETTINGS.iter().all(|d| d.key != "voodoo_fps_cap"));
+
+        let input = |pairs: &[(&str, &str)]| {
+            BTreeMap::from([("emulator".to_string(), pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())])
+        };
+        let one = |k: &str, v: &str| vec![("emulator".to_string(), k.to_string(), v.to_string())];
+        assert_eq!(normalize_all(&input(&[("voodoo_fps_cap", "60")])).unwrap(), one("fps_cap", "60"));
+        // Both names: the current one wins, whatever the order.
+        assert_eq!(normalize_all(&input(&[("voodoo_fps_cap", "30"), ("fps_cap", "off")])).unwrap(), one("fps_cap", "off"));
+        assert_eq!(normalize_all(&input(&[("fps_cap", "60"), ("voodoo_fps_cap", "30")])).unwrap(), one("fps_cap", "60"));
+        assert!(normalize_all(&input(&[("voodoo_fps_cap", "300")])).is_err());
     }
 
     #[test]

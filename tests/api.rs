@@ -288,8 +288,47 @@ async fn windows_flow() {
     let (_, v) = c.call(Method::PATCH, &format!("/api/v1/versions/{keen_v}"), Some(json!({"label": "1.4"})), Some(&token), "198.51.100.9", None).await;
     assert_eq!(v["platform"], "win16", "a patch without platform leaves it");
     let (_, schema) = c.get("/api/v1/schema").await;
-    assert_eq!(schema["version"], 2);
+    assert_eq!(schema["version"], 3);
     assert!(schema["settings"].as_array().unwrap().iter().any(|s| s["key"] == "win32_depth" && s["group"] == "windows"));
+}
+
+#[tokio::test]
+async fn fps_cap_is_reported_and_recommended_under_its_new_name() {
+    let (c, _) = Client::new().await;
+    let (s, game) = c.post("/api/v1/games", json!({"name": "Test Drive 4", "version": {"label": "1.0", "platform": "win32", "files": [{"name": "TD4.EXE", "crc32": "4d4d4d4d"}]}}), "203.0.113.1").await;
+    assert_eq!(s, StatusCode::OK, "{game}");
+    let slug = game["slug"].as_str().unwrap().to_string();
+    let version = game["versions"][0]["id"].as_i64().unwrap();
+    let report = |emulator: Value| json!({"game": slug, "version_id": version, "rating": "green", "settings": {"emulator": emulator}});
+
+    // Out of range under either name.
+    for bad in [json!({"fps_cap": "300"}), json!({"fps_cap": "5"}), json!({"voodoo_fps_cap": "on"})] {
+        let (s, r) = c.post("/api/v1/reports", report(bad.clone()), "203.0.113.10").await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {r}");
+    }
+
+    // An old client's report under the old name counts as fps_cap.
+    let (s, r) = c.post("/api/v1/reports", report(json!({"voodoo_fps_cap": "60"})), "203.0.113.11").await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (s, r) = c.post("/api/v1/reports", report(json!({"fps_cap": "60", "voodoo_fps_cap": "30"})), "203.0.113.12").await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (_, config) = c.get(&format!("/api/v1/games/{slug}/config?version={version}")).await;
+    let cap = setting(&config, "fps_cap");
+    assert_eq!((cap["section"].as_str(), cap["value"].as_str(), cap["agree"].as_i64()), (Some("emulator"), Some("60"), Some(2)));
+    assert!(config["settings"].as_array().unwrap().iter().all(|s| s["key"] != "voodoo_fps_cap"));
+    assert_eq!(config["ini"], "[emulator]\nwin32=true\nfps_cap=60\n");
+
+    // `off` is a value of its own, for programs measured by their frame rate.
+    let (s, r) = c.post("/api/v1/reports", report(json!({"fps_cap": "OFF"})), "203.0.113.13").await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (_, reports) = c.get(&format!("/api/v1/games/{slug}/reports")).await;
+    assert!(reports.to_string().contains("\"off\""), "{reports}");
+
+    let (_, schema) = c.get("/api/v1/schema").await;
+    let def = schema["settings"].as_array().unwrap().iter().find(|s| s["key"] == "fps_cap").unwrap().clone();
+    assert_eq!((def["section"].as_str(), def["group"].as_str()), (Some("emulator"), Some("machine")));
+    assert_eq!(def["options"][0], "off");
+    assert!(def["options"].as_array().unwrap().contains(&json!("60")));
 }
 
 #[tokio::test]

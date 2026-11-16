@@ -388,11 +388,14 @@ fieldset { border: 0; min-width: 0; }
 .meta, .aliases { color: var(--lcyan); }
 .head-body { display: grid; gap: 1em; }
 
-.vlist { display: grid; background: var(--cyan); color: var(--black); }
-.vlist li { display: flex; align-items: baseline; justify-content: space-between; padding: 0 1ch; }
+.vlist { display: grid; grid-template-columns: minmax(0, 1fr); background: var(--cyan); color: var(--black); }
+/* Long labels (Rust-DOS names versions after their files) wrap under
+   themselves; the badges keep to the right. */
+.vlist li { display: flex; align-items: baseline; justify-content: space-between; gap: 0 1ch; padding: 0 1ch; min-width: 0; }
 .vlist li.is-sel { background: var(--green); }
 .vlist li.is-sel a { color: var(--white); }
-.vlist a { text-decoration: none; color: var(--black); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vlist a { text-decoration: none; color: var(--black); flex: 1; min-width: 0; overflow-wrap: anywhere; padding-left: 2ch; text-indent: -2ch; }
+.vlist li > .badge { flex: none; margin-left: 0; }
 .vlist li.is-hidden { color: var(--dgray); }
 .vlist .muted { color: var(--blue); }
 .vlist .light-green { color: var(--green); }
@@ -545,6 +548,8 @@ select.input option { background: var(--cyan); color: var(--black); }
 
 .error { background: var(--red); color: var(--white); padding: 0 1ch; line-height: 1.25; }
 .error .hk { color: var(--yellow); }
+.win .error a:not(.btn) { color: var(--yellow); }
+.win .error a:not(.btn):hover { color: var(--white); }
 .ok { color: var(--lgreen); }
 .dialog .ok { color: var(--green); }
 .danger-zone { padding-top: 1em; }

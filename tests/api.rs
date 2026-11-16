@@ -412,3 +412,98 @@ async fn a_key_replaces_its_report_and_corrects_its_game() {
     let (_, jill_reports) = c.get("/api/v1/games/jill-of-the-jungle/reports").await;
     assert_eq!(jill_reports[0]["id"], jill["id"]);
 }
+
+#[tokio::test]
+async fn the_adders_key_corrects_the_game_and_its_versions() {
+    let (c, state) = Client::new().await;
+    users::create_direct(&state.db, "admin", "correct horse battery", Role::Admin).await.unwrap();
+    let key = "0f8fad5b-d9cb-469f-a165-70867728950e";
+    let other = "11111111-2222-3333-4444-555555555555";
+    let patch = |uri: String, body: Value, token: Option<&'static str>| {
+        let c = &c;
+        async move { c.call(Method::PATCH, &uri, Some(body), token, "203.0.113.20", None).await }
+    };
+
+    // Rust-DOS adds the game with only its 16-bit installer, so it reads as Windows 3.1.
+    let (s, game) = c
+        .post(
+            "/api/v1/games",
+            json!({
+                "name": "Andretti Racing", "key": key,
+                "version": {"label": "SETUP.EXE", "platform": "win16", "files": [{"name": "SETUP.EXE", "crc32": "12345678"}]}
+            }),
+            "203.0.113.1",
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{game}");
+    let v = game["versions"][0]["id"].as_i64().unwrap();
+    let vuri = format!("/api/v1/versions/{v}");
+
+    // Without the key, or with another, nothing changes.
+    let (s, e) = patch(vuri.clone(), json!({"platform": "win32"}), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    let (s, _) = patch(vuri.clone(), json!({"platform": "win32", "key": other}), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // With it, the platform, label and files; not hiding.
+    let (s, fixed) = patch(
+        vuri.clone(),
+        json!({"key": key, "platform": "win32", "label": "CD-ROM", "files": [{"name": "ANDRETTI.EXE", "md5": "0123456789abcdef0123456789abcdef"}]}),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{fixed}");
+    assert_eq!((fixed["platform"].clone(), fixed["label"].clone()), (json!("win32"), json!("CD-ROM")));
+    assert_eq!(fixed["files"][0]["name"], "andretti.exe");
+    let (s, _) = patch(vuri.clone(), json!({"key": key, "files": [{"name": "NOHASH.EXE"}]}), None).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "players' files need a hash");
+    let (s, _) = patch(vuri.clone(), json!({"key": key, "hidden": true}), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "hiding is for staff");
+
+    // The game's details too.
+    let (s, g) = patch("/api/v1/games/andretti-racing".into(), json!({"key": key, "year": 1996, "publisher": "Electronic Arts"}), None).await;
+    assert_eq!(s, StatusCode::OK, "{g}");
+    assert_eq!(g["year"], 1996);
+    let (s, _) = patch("/api/v1/games/andretti-racing".into(), json!({"key": other, "year": 1990}), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // A version added with no files at all (it runs from the disc) gets its own key.
+    let (s, nv) = c.post("/api/v1/games/andretti-racing/versions", json!({"label": "Disc", "key": other}), "203.0.113.2").await;
+    assert_eq!(s, StatusCode::OK, "{nv}");
+    let nuri = format!("/api/v1/versions/{}", nv["id"]);
+    let (s, _) = patch(nuri.clone(), json!({"key": key, "platform": "win32"}), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "the game's adder doesn't own others' versions");
+    let (s, nv) = patch(nuri.clone(), json!({"key": other, "platform": "win32"}), None).await;
+    assert_eq!((s, nv["platform"].clone()), (StatusCode::OK, json!("win32")));
+
+    // Staff edits stay: the key no longer corrects the version.
+    let (_, login) = c.post("/api/v1/auth/login", json!({"username": "admin", "password": "correct horse battery"}), "198.51.100.9").await;
+    let token: &'static str = Box::leak(login["token"].as_str().unwrap().to_string().into_boxed_str());
+    let (s, _) = patch(vuri.clone(), json!({"label": "CD-ROM 1.0"}), Some(token)).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = patch(vuri.clone(), json!({"key": key, "label": "mine again"}), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // Staff see who changed what.
+    let (_, log) = c.call(Method::GET, "/api/v1/moderation/log", None, Some(token), "198.51.100.9", None).await;
+    assert!(log.as_array().unwrap().iter().any(|e| e["action"] == "owner-edit" && e["user"] == "(adder's key)"), "{log}");
+}
+
+#[tokio::test]
+async fn an_existing_game_is_named_and_notes_come_with_the_settings() {
+    let (c, _) = Client::new().await;
+    c.post("/api/v1/games", json!({"name": "Backyard Baseball"}), "203.0.113.1").await;
+    let (s, e) = c.post("/api/v1/games", json!({"name": "Backyard  Baseball"}), "203.0.113.1").await;
+    assert_eq!((s, e["game"].clone()), (StatusCode::CONFLICT, json!("backyard-baseball")), "{e}");
+
+    let report = |rating: &str, notes: &str| {
+        json!({"game": "backyard-baseball", "rating": rating, "notes": notes, "settings": {"emulator": {"cpu": "486"}}})
+    };
+    c.post("/api/v1/reports", report("green", "Voodoo 2: fine"), "203.0.113.2").await;
+    c.post("/api/v1/reports", report("red", "Voodoo 3: crashes in the menu"), "203.0.113.3").await;
+    c.post("/api/v1/reports", json!({"game": "backyard-baseball", "rating": "green"}), "203.0.113.4").await;
+    let (_, config) = c.get("/api/v1/games/backyard-baseball/config").await;
+    let notes: Vec<&str> = config["notes"].as_array().unwrap().iter().map(|n| n["notes"].as_str().unwrap()).collect();
+    assert_eq!(notes.len(), 2, "{config}");
+    assert!(notes.contains(&"Voodoo 3: crashes in the menu"), "a red report's notes count too");
+}

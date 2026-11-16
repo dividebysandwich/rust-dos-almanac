@@ -11,6 +11,9 @@ pub struct Model {
     pub source_hash: Option<String>,
     /// `dos`, `win16` or `win32`; None when unknown.
     pub platform: Option<String>,
+    /// SHA-256 of the key of whoever added it, who may correct it; cleared
+    /// once staff edit it.
+    pub owner_key: Option<String>,
     pub created_at: i64,
 }
 

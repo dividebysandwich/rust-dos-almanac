@@ -366,6 +366,26 @@ pub struct Recommendation {
     pub settings: Vec<RecommendedSetting>,
     /// The settings as a Rust-DOS config fragment.
     pub ini: String,
+    /// What players and staff wrote about it: the blessed report's, or
+    /// those of the reports the consensus came from, newest first.
+    #[serde(default)]
+    pub notes: Vec<ReportNote>,
+}
+
+/// One report's notes, as `Recommendation` carries them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReportNote {
+    pub report_id: i64,
+    pub version_id: Option<i64>,
+    pub rating: Rating,
+    /// The player's own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// Staff's description of the experience.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub rust_dos_version: Option<String>,
+    pub updated_at: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -377,6 +397,11 @@ pub struct NewVersion {
     pub files: Vec<FileInfo>,
     #[serde(default)]
     pub ra_md5: Option<String>,
+    /// The adder's key (see `NewReport::key`), with which they may correct
+    /// the version until staff edit it. In `NewGame`, the game's key is
+    /// taken when this is missing.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -432,12 +457,17 @@ pub struct GamePatch {
     pub year: Option<Option<i32>>,
     pub publisher: Option<Option<String>>,
     pub aliases: Option<Vec<String>>,
+    /// Staff only.
     pub hidden: Option<bool>,
+    /// Without a staff login: the key the game was added with.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VersionPatch {
     pub label: Option<String>,
+    /// Staff only.
     pub hidden: Option<bool>,
     /// Some(None) clears it.
     pub platform: Option<Option<Platform>>,
@@ -445,6 +475,9 @@ pub struct VersionPatch {
     pub files: Option<Vec<FileInfo>>,
     /// Replaces the version's archive hashes.
     pub ra_md5: Option<Vec<String>>,
+    /// Without a staff login: the key the version was added with.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

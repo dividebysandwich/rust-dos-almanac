@@ -1,4 +1,4 @@
-use crate::app::components::{ActionError, ErrorLine, Light, PlatformBadge, PlatformSelect, RatingBar, RecommendedTable, SettingChips, Window, date, error_text};
+use crate::app::components::{ActionError, ErrorLine, KeyField, Light, PlatformBadge, PlatformSelect, RatingBar, RecommendedTable, SettingChips, Window, date, error_text};
 use crate::app::fns::*;
 use crate::app::use_session;
 use crate::model::{GameDetail, Recommendation, RecommendationSource, ReportInfo, Scope, VersionInfo, file_lines};
@@ -7,9 +7,10 @@ use leptos_meta::Title;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_params_map, use_query_map};
 
-/// The staff actions on this page; any of them finishing reloads the data.
+/// The actions on this page, staff's and the edits an adder may make with
+/// their key; any of them finishing reloads the data.
 #[derive(Clone, Copy)]
-struct StaffActions {
+struct PageActions {
     hide_report: ServerAction<SetReportHidden>,
     bless: ServerAction<BlessReport>,
     unbless: ServerAction<Unbless>,
@@ -19,7 +20,7 @@ struct StaffActions {
     hide_version: ServerAction<SetVersionHidden>,
 }
 
-impl StaffActions {
+impl PageActions {
     fn new() -> Self {
         Self {
             hide_report: ServerAction::new(),
@@ -49,7 +50,7 @@ pub fn GamePage() -> impl IntoView {
     let query = use_query_map();
     let slug = move || params.read().get("slug").unwrap_or_default();
     let version = move || query.read().get("v").and_then(|v| v.parse::<i64>().ok());
-    let actions = StaffActions::new();
+    let actions = PageActions::new();
     provide_context(actions);
 
     let game = Resource::new(move || (slug(), actions.generation()), |(s, _)| get_game(s));
@@ -107,7 +108,7 @@ fn GameView(
 #[component]
 fn GameHeader(game: GameDetail, report_href: String) -> impl IntoView {
     let session = use_session();
-    let actions = expect_context::<StaffActions>();
+    let actions = expect_context::<PageActions>();
     let slug = game.slug.clone();
     let version_href = format!("/games/{slug}/version");
     let meta: Vec<String> = [game.year.map(|y| y.to_string()), game.publisher.clone()].into_iter().flatten().collect();
@@ -139,17 +140,16 @@ fn GameHeader(game: GameDetail, report_href: String) -> impl IntoView {
                     </A>
                 </p>
                 {move || {
-                    session
-                        .is_staff()
-                        .then(|| {
-                            let g = edit.clone();
-                            let (slug_a, slug_b) = (g.slug.clone(), g.slug.clone());
-                            let year = g.year.map(|y| y.to_string()).unwrap_or_default();
-                            let publisher = g.publisher.clone().unwrap_or_default();
-                            let aliases = g.aliases.join(", ");
-                            let name = g.name.clone();
-                            view! {
+                    let staff = session.is_staff();
+                    let g = edit.clone();
+                    let (slug_a, slug_b) = (g.slug.clone(), g.slug.clone());
+                    let year = g.year.map(|y| y.to_string()).unwrap_or_default();
+                    let publisher = g.publisher.clone().unwrap_or_default();
+                    let aliases = g.aliases.join(", ");
+                    let name = g.name.clone();
+                    view! {
                                 <div class="staff-bar">
+                                    {staff.then(|| view! {
                                     <ActionForm action=actions.hide_game attr:class="inline">
                                         <input type="hidden" name="slug" value=slug_a />
                                         <input type="hidden" name="hidden" value=(!hidden).to_string() />
@@ -157,10 +157,18 @@ fn GameHeader(game: GameDetail, report_href: String) -> impl IntoView {
                                             {if hidden { "Unhide game" } else { "Hide game" }}
                                         </button>
                                     </ActionForm>
+                                    })}
                                     <details class="edit">
-                                        <summary class="btn small">"Edit game"</summary>
+                                        <summary class="btn small">{if staff { "Edit game" } else { "Correct game details" }}</summary>
                                         <ActionForm action=actions.edit_game attr:class="form">
                                             <input type="hidden" name="slug" value=slug_b />
+                                            {(!staff).then(|| view! {
+                                                <KeyField
+                                                    id="f-game-key"
+                                                    required=true
+                                                    hint="The uuid= in the [game] section of the Rust-DOS game profile that added this game. Otherwise, only staff can change it."
+                                                />
+                                            })}
                                             <Field label="Name" name="name" value=name />
                                             <Field label="Year" name="year" value=year />
                                             <Field label="Publisher" name="publisher" value=publisher />
@@ -175,8 +183,7 @@ fn GameHeader(game: GameDetail, report_href: String) -> impl IntoView {
                                     <ActionError action=actions.edit_game />
                                     <ActionError action=actions.hide_game />
                                 </div>
-                            }
-                        })
+                    }
                 }}
             </div>
         </Window>
@@ -251,7 +258,7 @@ fn Versions(game: GameDetail, selected: Option<i64>) -> impl IntoView {
 #[component]
 fn VersionFiles(slug: String, version: VersionInfo) -> impl IntoView {
     let session = use_session();
-    let actions = expect_context::<StaffActions>();
+    let actions = expect_context::<PageActions>();
     let v = version.clone();
     view! {
         <Window title=format!("Files: {}", version.label) class="files-win">
@@ -295,23 +302,31 @@ fn VersionFiles(slug: String, version: VersionInfo) -> impl IntoView {
             }}
             {(!version.ra_md5.is_empty()).then(|| view! { <p class="ra">"Archive hash: " <span class="hash">{version.ra_md5.join(", ")}</span></p> })}
             {move || {
-                session
-                    .is_staff()
-                    .then(|| {
-                        let v = v.clone();
-                        view! {
+                let staff = session.is_staff();
+                let v = v.clone();
+                let (id_a, id_b) = (v.id.to_string(), v.id.to_string());
+                view! {
                             <div class="staff-bar">
+                                {staff.then(|| view! {
                                 <ActionForm action=actions.hide_version attr:class="inline">
-                                    <input type="hidden" name="id" value=v.id.to_string() />
+                                    <input type="hidden" name="id" value=id_a />
                                     <input type="hidden" name="hidden" value=(!v.hidden).to_string() />
                                     <button type="submit" class="btn small">
                                         {if v.hidden { "Unhide version" } else { "Hide version" }}
                                     </button>
                                 </ActionForm>
+                                })}
                                 <details class="edit">
-                                    <summary class="btn small">"Edit version"</summary>
+                                    <summary class="btn small">{if staff { "Edit version" } else { "Correct this version" }}</summary>
                                     <ActionForm action=actions.edit_version attr:class="form">
-                                        <input type="hidden" name="id" value=v.id.to_string() />
+                                        <input type="hidden" name="id" value=id_b />
+                                        {(!staff).then(|| view! {
+                                            <KeyField
+                                                id="f-version-key"
+                                                required=true
+                                                hint="The uuid= in the [game] section of the Rust-DOS game profile that added this version. Files need a CRC32, MD5 or SHA-1. Otherwise, only staff can change it."
+                                            />
+                                        })}
                                         <Field label="Label" name="label" value=v.label.clone() required=true />
                                         <PlatformSelect value=v.platform />
                                         <div class="field wide">
@@ -331,8 +346,7 @@ fn VersionFiles(slug: String, version: VersionInfo) -> impl IntoView {
                                 <ActionError action=actions.edit_version />
                                 <ActionError action=actions.hide_version />
                             </div>
-                        }
-                    })
+                }
             }}
             <p class="muted small">{format!("Version id {} · /games/{slug}?v={}", version.id, version.id)}</p>
         </Window>
@@ -342,7 +356,7 @@ fn VersionFiles(slug: String, version: VersionInfo) -> impl IntoView {
 #[component]
 fn ConfigWindow(slug: String, config: Result<Recommendation, ServerFnError>) -> impl IntoView {
     let session = use_session();
-    let actions = expect_context::<StaffActions>();
+    let actions = expect_context::<PageActions>();
     let rec = match config {
         Ok(r) => r,
         Err(e) => return view! { <Window title="Recommended settings"><ErrorLine message=error_text(&e) /></Window> }.into_any(),
@@ -435,7 +449,7 @@ fn Reports(slug: String, reports: Result<Vec<ReportInfo>, ServerFnError>, report
 #[component]
 fn ReportCard(slug: String, report: ReportInfo) -> impl IntoView {
     let session = use_session();
-    let actions = expect_context::<StaffActions>();
+    let actions = expect_context::<PageActions>();
     let r = report.clone();
     let anchor = format!("report-{}", report.id);
     view! {

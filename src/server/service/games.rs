@@ -1,4 +1,4 @@
-use super::{id32, key_hash, log_action, ratings_by};
+use super::{Editor, editor, id32, key_hash, log_action, log_owner_edit, ratings_by};
 use crate::model::*;
 use crate::server::auth::{Actor, now};
 use crate::server::entities::{game, game_version, report, version_archive, version_file};
@@ -249,15 +249,28 @@ pub async fn get(db: &DatabaseConnection, actor: &Actor, slug: &str) -> Result<G
     detail(db, actor, g).await
 }
 
-async fn insert_version<C: sea_orm::ConnectionTrait>(db: &C, actor: &Actor, game_id: i32, v: &NewVersion) -> Result<game_version::Model> {
-    let label = text("version label", &v.label, 100)?;
-    if v.files.len() > MAX_FILES {
+/// A version's files, checked: each with a hash, as players send them.
+fn checked_files(files: &[FileInfo]) -> Result<Vec<FileInfo>> {
+    if files.len() > MAX_FILES {
         return Err(Error::invalid(format!("at most {MAX_FILES} files per version")));
     }
-    let files: Vec<FileInfo> = v.files.iter().map(normalize_file).collect::<Result<_>>()?;
+    let files: Vec<FileInfo> = files.iter().map(normalize_file).collect::<Result<_>>()?;
     if files.iter().any(|f| f.crc32.is_none() && f.md5.is_none() && f.sha1.is_none()) {
         return Err(Error::invalid("every file needs a crc32, md5 or sha1"));
     }
+    Ok(files)
+}
+
+/// `owner_key` is the adder's key, hashed.
+async fn insert_version<C: sea_orm::ConnectionTrait>(
+    db: &C,
+    actor: &Actor,
+    game_id: i32,
+    v: &NewVersion,
+    owner_key: Option<String>,
+) -> Result<game_version::Model> {
+    let label = text("version label", &v.label, 100)?;
+    let files = checked_files(&v.files)?;
     let ra = v.ra_md5.as_deref().filter(|s| !s.trim().is_empty()).map(normalize_ra).transpose()?;
     if let Some(ra) = &ra
         && version_archive::Entity::find().filter(version_archive::Column::RaMd5.eq(ra.as_str())).one(db).await?.is_some()
@@ -269,6 +282,7 @@ async fn insert_version<C: sea_orm::ConnectionTrait>(db: &C, actor: &Actor, game
         label: Set(label),
         hidden: Set(false),
         platform: Set(v.platform.map(|p| p.as_str().to_string())),
+        owner_key: Set(owner_key),
         source_hash: Set((!actor.is_staff()).then(|| actor.source.clone())),
         created_at: Set(now()),
         ..Default::default()
@@ -304,9 +318,13 @@ pub async fn create(state: &AppState, actor: &Actor, input: NewGame) -> Result<G
     let year = year(input.year)?;
     let aliases = aliases(&input.aliases)?;
     let owner_key = key_hash(input.key.as_deref())?;
+    let version_key = match input.version.as_ref().and_then(|v| v.key.as_deref()) {
+        Some(k) => key_hash(Some(k))?,
+        None => owner_key.clone(),
+    };
     let db = &state.db;
     if game::Entity::find().filter(game::Column::Slug.eq(slug.as_str())).one(db).await?.is_some() {
-        return Err(Error::Conflict(format!("the game already exists as '{slug}'; add a version to it instead")));
+        return Err(Error::GameExists(slug));
     }
     actor.spend_write(state)?;
 
@@ -329,7 +347,7 @@ pub async fn create(state: &AppState, actor: &Actor, input: NewGame) -> Result<G
     .insert(&txn)
     .await?;
     if let Some(v) = &input.version {
-        insert_version(&txn, actor, g.id, v).await?;
+        insert_version(&txn, actor, g.id, v, version_key).await?;
     }
     txn.commit().await?;
     if let Some(uid) = actor.user_id() {
@@ -385,10 +403,11 @@ pub async fn add_version(state: &AppState, actor: &Actor, slug: &str, input: New
     let g = find_visible(db, actor, slug).await?;
     // Validate before spending the budget, so typos don't cost a write.
     text("version label", &input.label, 100)?;
-    input.files.iter().map(normalize_file).collect::<Result<Vec<_>>>()?;
+    checked_files(&input.files)?;
+    let owner_key = key_hash(input.key.as_deref())?;
     actor.spend_write(state)?;
     let txn = db.begin().await?;
-    let v = insert_version(&txn, actor, g.id, &input).await?;
+    let v = insert_version(&txn, actor, g.id, &input, owner_key).await?;
     touch(&txn, g.id).await?;
     txn.commit().await?;
     if let Some(uid) = actor.user_id() {
@@ -398,10 +417,15 @@ pub async fn add_version(state: &AppState, actor: &Actor, slug: &str, input: New
     detail.versions.into_iter().find(|x| x.id == i64::from(v.id)).ok_or(Error::NotFound)
 }
 
+/// Staff may change anything; whoever added the game, with its key, may
+/// change its name, year, publisher and aliases until staff edit it.
 pub async fn update(state: &AppState, actor: &Actor, slug: &str, patch: GamePatch) -> Result<GameDetail> {
-    let staff = actor.staff()?.clone();
     let db = &state.db;
     let g = find_visible(db, actor, slug).await?;
+    let who = editor(actor, patch.key.as_deref(), g.owner_key.as_deref())?;
+    if matches!(who, Editor::Owner) && patch.hidden.is_some() {
+        return Err(Error::Forbidden);
+    }
     let mut changes = Vec::new();
     let mut m = g.clone().into_active_model();
     let mut name = g.name.clone();
@@ -429,26 +453,58 @@ pub async fn update(state: &AppState, actor: &Actor, slug: &str, patch: GamePatc
         changes.push(if h { "hidden" } else { "shown" });
     }
     m.search_text = Set(search_text(&name, &g.slug, &alias_list));
-    // What staff wrote stays: the adder's reports no longer correct it.
-    m.owner_key = Set(None);
     m.updated_at = Set(now());
-    let g = m.update(db).await?;
-    let action = match patch.hidden {
-        Some(true) => "hide",
-        Some(false) => "unhide",
-        None => "edit",
-    };
-    log_action(db, id32(staff.id)?, action, "game", g.id, Some(changes.join(", "))).await?;
-    detail(db, actor, g).await
+    match who {
+        Editor::Staff(uid) => {
+            // What staff wrote stays: the adder no longer corrects it.
+            m.owner_key = Set(None);
+            let g = m.update(db).await?;
+            let action = match patch.hidden {
+                Some(true) => "hide",
+                Some(false) => "unhide",
+                None => "edit",
+            };
+            log_action(db, uid, action, "game", g.id, Some(changes.join(", "))).await?;
+            detail(db, actor, g).await
+        }
+        Editor::Owner => {
+            actor.spend_write(state)?;
+            let g = m.update(db).await?;
+            log_owner_edit(db, actor, "game", g.id, &changes).await?;
+            detail(db, actor, g).await
+        }
+    }
 }
 
+/// Staff may change anything; whoever added the version, with its key,
+/// may change its label, platform, files and archive hashes until staff
+/// edit it.
 pub async fn update_version(state: &AppState, actor: &Actor, version_id: i64, patch: VersionPatch) -> Result<VersionInfo> {
-    let staff = actor.staff()?.clone();
     let db = &state.db;
     let v = game_version::Entity::find_by_id(id32(version_id)?).one(db).await?.ok_or(Error::NotFound)?;
     let g = game::Entity::find_by_id(v.game_id).one(db).await?.ok_or(Error::NotFound)?;
+    if (g.hidden || v.hidden) && !actor.is_staff() {
+        return Err(Error::NotFound);
+    }
+    let who = editor(actor, patch.key.as_deref(), v.owner_key.as_deref())?;
+    let owner = matches!(who, Editor::Owner);
+    if owner && patch.hidden.is_some() {
+        return Err(Error::Forbidden);
+    }
+    // Players' files need hashes, as when they add a version; staff may list names alone.
+    let files = match &patch.files {
+        Some(f) if owner => Some(checked_files(f)?),
+        Some(f) => Some(f.iter().map(normalize_file).collect::<Result<Vec<_>>>()?),
+        None => None,
+    };
+    if owner {
+        actor.spend_write(state)?;
+    }
     let txn = db.begin().await?;
     let mut m = v.clone().into_active_model();
+    if !owner {
+        m.owner_key = Set(None);
+    }
     let mut changes = Vec::new();
     if let Some(l) = &patch.label {
         m.label = Set(text("version label", l, 100)?);
@@ -463,8 +519,7 @@ pub async fn update_version(state: &AppState, actor: &Actor, version_id: i64, pa
         changes.push("platform");
     }
     m.update(&txn).await?;
-    if let Some(files) = &patch.files {
-        let files: Vec<FileInfo> = files.iter().map(normalize_file).collect::<Result<_>>()?;
+    if let Some(files) = files {
         version_file::Entity::delete_many().filter(version_file::Column::VersionId.eq(v.id)).exec(&txn).await?;
         for f in files {
             version_file::ActiveModel {
@@ -494,12 +549,17 @@ pub async fn update_version(state: &AppState, actor: &Actor, version_id: i64, pa
     }
     touch(&txn, g.id).await?;
     txn.commit().await?;
-    let action = match patch.hidden {
-        Some(true) => "hide",
-        Some(false) => "unhide",
-        None => "edit",
-    };
-    log_action(db, id32(staff.id)?, action, "version", v.id, Some(changes.join(", "))).await?;
+    match who {
+        Editor::Staff(uid) => {
+            let action = match patch.hidden {
+                Some(true) => "hide",
+                Some(false) => "unhide",
+                None => "edit",
+            };
+            log_action(db, uid, action, "version", v.id, Some(changes.join(", "))).await?;
+        }
+        Editor::Owner => log_owner_edit(db, actor, "version", v.id, &changes).await?,
+    }
     let detail = detail(db, actor, g).await?;
     detail.versions.into_iter().find(|x| x.id == version_id).ok_or(Error::NotFound)
 }

@@ -133,6 +133,14 @@ pub async fn get_config(slug: String, version: Option<i64>) -> Result<Recommenda
     Ok(reports::recommendation(&state.db, &actor, &slug, version).await?)
 }
 
+/// What the new game form led to: the game added (and the browser sent
+/// to it), or one of that name there already.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum GameCreated {
+    Added(String),
+    Exists(String),
+}
+
 #[server(prefix = "/_sfn")]
 pub async fn create_game(
     name: String,
@@ -144,7 +152,7 @@ pub async fn create_game(
     files: String,
     ra_md5: String,
     #[server(default)] key: String,
-) -> Result<String, ServerFnError> {
+) -> Result<GameCreated, ServerFnError> {
     let (state, actor) = ctx().await?;
     let platform = parse_platform(&platform)?;
     let version = if opt(&label).is_some() || opt(&files).is_some() || opt(&ra_md5).is_some() || platform.is_some() {
@@ -153,20 +161,39 @@ pub async fn create_game(
             platform,
             files: parse_file_lines(&files).map_err(ServerFnError::new)?,
             ra_md5: opt(&ra_md5),
+            key: None,
         })
     } else {
         None
     };
     let input = NewGame { name, year: parse_year(&year)?, publisher: opt(&publisher), aliases: parse_list(&aliases), version, key: opt(&key) };
-    let g = games::create(&state, &actor, input).await?;
-    leptos_axum::redirect(&format!("/games/{}", g.slug));
-    Ok(g.slug)
+    match games::create(&state, &actor, input).await {
+        Ok(g) => {
+            leptos_axum::redirect(&format!("/games/{}", g.slug));
+            Ok(GameCreated::Added(g.slug))
+        }
+        Err(crate::server::error::Error::GameExists(slug)) => Ok(GameCreated::Exists(slug)),
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[server(prefix = "/_sfn")]
-pub async fn add_version(slug: String, label: String, platform: String, files: String, ra_md5: String) -> Result<i64, ServerFnError> {
+pub async fn add_version(
+    slug: String,
+    label: String,
+    platform: String,
+    files: String,
+    ra_md5: String,
+    #[server(default)] key: String,
+) -> Result<i64, ServerFnError> {
     let (state, actor) = ctx().await?;
-    let input = NewVersion { label, platform: parse_platform(&platform)?, files: parse_file_lines(&files).map_err(ServerFnError::new)?, ra_md5: opt(&ra_md5) };
+    let input = NewVersion {
+        label,
+        platform: parse_platform(&platform)?,
+        files: parse_file_lines(&files).map_err(ServerFnError::new)?,
+        ra_md5: opt(&ra_md5),
+        key: opt(&key),
+    };
     let v = games::add_version(&state, &actor, &slug, input).await?;
     leptos_axum::redirect(&format!("/games/{slug}?v={}", v.id));
     Ok(v.id)
@@ -254,7 +281,14 @@ pub async fn unbless(slug: String, version: Option<i64>) -> Result<(), ServerFnE
 }
 
 #[server(prefix = "/_sfn")]
-pub async fn edit_game(slug: String, name: String, year: String, publisher: String, aliases: String) -> Result<(), ServerFnError> {
+pub async fn edit_game(
+    slug: String,
+    name: String,
+    year: String,
+    publisher: String,
+    aliases: String,
+    #[server(default)] key: String,
+) -> Result<(), ServerFnError> {
     let (state, actor) = ctx().await?;
     let patch = GamePatch {
         name: Some(name),
@@ -262,6 +296,7 @@ pub async fn edit_game(slug: String, name: String, year: String, publisher: Stri
         publisher: Some(opt(&publisher)),
         aliases: Some(parse_list(&aliases)),
         hidden: None,
+        key: opt(&key),
     };
     games::update(&state, &actor, &slug, patch).await?;
     Ok(())
@@ -275,7 +310,14 @@ pub async fn set_game_hidden(slug: String, hidden: bool) -> Result<(), ServerFnE
 }
 
 #[server(prefix = "/_sfn")]
-pub async fn edit_version(id: i64, label: String, platform: String, files: String, ra_md5: String) -> Result<(), ServerFnError> {
+pub async fn edit_version(
+    id: i64,
+    label: String,
+    platform: String,
+    files: String,
+    ra_md5: String,
+    #[server(default)] key: String,
+) -> Result<(), ServerFnError> {
     let (state, actor) = ctx().await?;
     let patch = VersionPatch {
         label: Some(label),
@@ -283,6 +325,7 @@ pub async fn edit_version(id: i64, label: String, platform: String, files: Strin
         platform: Some(parse_platform(&platform)?),
         files: Some(parse_file_lines(&files).map_err(ServerFnError::new)?),
         ra_md5: Some(parse_list(&ra_md5)),
+        key: opt(&key),
     };
     games::update_version(&state, &actor, id, patch).await?;
     Ok(())

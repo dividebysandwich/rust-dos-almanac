@@ -6,7 +6,7 @@ pub mod moderation;
 pub mod reports;
 pub mod users;
 
-use super::auth::now;
+use super::auth::{Actor, now};
 use super::entities::{moderation_log, report};
 use super::error::{Error, Result};
 use crate::model::{Rating, RatingSummary};
@@ -23,6 +23,41 @@ pub fn key_hash(key: Option<&str>) -> Result<Option<String>> {
         return Err(Error::invalid("the key is 16 to 64 letters, digits and dashes, such as a UUID"));
     }
     Ok(Some(hex::encode(Sha256::digest(key.to_ascii_lowercase().as_bytes()))))
+}
+
+/// Who changes a game or version: staff, or whoever added it, by the key
+/// they added it with (`owner_key`, hashed).
+pub(super) enum Editor {
+    Staff(i32),
+    Owner,
+}
+
+pub(super) fn editor(actor: &Actor, key: Option<&str>, owner_key: Option<&str>) -> Result<Editor> {
+    if let Some(u) = &actor.user {
+        return Ok(Editor::Staff(id32(u.id)?));
+    }
+    match key_hash(key)? {
+        Some(k) if owner_key == Some(k.as_str()) => Ok(Editor::Owner),
+        _ => Err(Error::WrongKey),
+    }
+}
+
+/// Log a change its adder made with their key, for staff to see: no user,
+/// and the start of the source pseudonym, to follow it up.
+pub(super) async fn log_owner_edit(db: &impl ConnectionTrait, actor: &Actor, target_type: &str, target_id: i32, changes: &[&str]) -> Result<()> {
+    let source: String = actor.source.chars().take(8).collect();
+    moderation_log::ActiveModel {
+        user_id: Set(None),
+        action: Set("owner-edit".into()),
+        target_type: Set(target_type.into()),
+        target_id: Set(target_id.into()),
+        detail: Set(Some(format!("{} · src {source}", changes.join(", ")))),
+        at: Set(now()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await?;
+    Ok(())
 }
 
 pub fn id32(id: i64) -> Result<i32> {

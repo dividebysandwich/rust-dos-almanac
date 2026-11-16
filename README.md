@@ -64,10 +64,11 @@ Other commands: `migrate`, `set-password <user>`.
 | `GET /games?q=&platform=all\|dos\|windows&page=` | all | Search name, aliases and slug; `platform` keeps games with a version of that platform |
 | `POST /games/lookup` | all | `{"ra_md5": "…", "files": [{"name", "size", "crc32", "md5", "sha1"}]}` → matching versions with their `platform`, best first |
 | `GET /games/{slug}` | all | Game, versions, files, rating counts |
-| `GET /games/{slug}/config?version=&format=json\|ini` | all | Recommended settings; `ini` is a fragment for `rust-dos.conf`. A setting with `"implied": true` comes from the platform, not reports |
+| `GET /games/{slug}/config?version=&format=json\|ini` | all | Recommended settings; `ini` is a fragment for `rust-dos.conf`. A setting with `"implied": true` comes from the platform, not reports. JSON also has `notes`: the blessed report's notes, or those of the reports the consensus came from (red ones too), newest first, at most 10 |
 | `GET /games/{slug}/reports` | all | |
 | `POST /games`, `POST /games/{slug}/versions`, `POST /reports` | all, rate limited | |
-| `PATCH /games/{slug}`, `PATCH /versions/{id}`, `PATCH /reports/{id}` | staff | Edit, or `{"hidden": true}` |
+| `PATCH /games/{slug}`, `PATCH /versions/{id}` | staff, or the adder's `key` | Edit; staff may also `{"hidden": true}` |
+| `PATCH /reports/{id}` | staff | Edit, or `{"hidden": true}` |
 | `POST /reports/{id}/bless`, `DELETE /games/{slug}/blessing?version=` | staff | |
 | `GET /moderation/reports`, `POST /moderation/hide-source`, `GET /moderation/log` | staff | |
 | `POST /auth/login` → `{"token"}`, then `Authorization: Bearer <token>` | | |
@@ -87,6 +88,18 @@ Other commands: `migrate`, `set-password <user>`.
 - `year`, `publisher`: fill in what the game lacks. A game added with
   `POST /games` and a `key` takes its adder's corrections from reports with
   the same key, until staff edit it.
+
+`POST /games` and `POST /games/{slug}/versions` take a `key` too (a
+`version` in `POST /games` takes the game's unless it has its own). With
+it, the adder corrects what they added, in the API or on the game's page:
+`PATCH /games/{slug}` with `key` and `name`, `year`, `publisher` or
+`aliases`, and `PATCH /versions/{id}` with `key` and `label`, `platform`,
+`files` (each with a hash) or `ra_md5`. Such an edit spends from the write
+budget and shows in the moderation log as `owner-edit`. Once staff edit the
+game or version, the key no longer does; a wrong key gets 403.
+
+`POST /games` for a name that is taken answers 409 with the existing
+game's slug as `game`, to report on it or add a version to it instead.
 
 The report and new game forms take a pasted game profile and fill
 themselves in from it, in the browser (`model::parse_config`).

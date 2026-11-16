@@ -1,6 +1,6 @@
 use super::game::Field;
-use crate::app::components::{ActionError, Dialog, PasteConfig, PlatformSelect, Window};
-use crate::app::fns::{AddVersion, CreateGame};
+use crate::app::components::{ActionError, Dialog, KeyField, PasteConfig, PlatformSelect, Window};
+use crate::app::fns::{AddVersion, CreateGame, GameCreated};
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_router::components::A;
@@ -46,6 +46,23 @@ pub fn NewGamePage() -> impl IntoView {
                         <Field label="Archive hash" name="ra_md5" placeholder="RetroAchievements MD5 from Rust-DOS" />
                     </fieldset>
                     <ActionError action=create />
+                    {move || match create.value().get() {
+                        Some(Ok(GameCreated::Exists(slug))) => {
+                            Some(view! {
+                                <p class="error" role="alert">
+                                    <span class="hk">"Already here: "</span>
+                                    "a game of that name is in the almanac. "
+                                    <A href=format!("/games/{slug}/report")>"Report how it runs"</A>
+                                    " on it, "
+                                    <A href=format!("/games/{slug}/version")>"add your release as a version"</A>
+                                    ", or "
+                                    <A href=format!("/games/{slug}")>"look at it first"</A>
+                                    "."
+                                </p>
+                            })
+                        }
+                        _ => None,
+                    }}
                     <p class="form-buttons">
                         <button type="submit" class="btn is-default">
                             "Create"
@@ -87,6 +104,10 @@ pub fn NewVersionPage() -> impl IntoView {
                     <PlatformSelect />
                     <FilesField />
                     <Field label="Archive hash" name="ra_md5" placeholder="RetroAchievements MD5 from Rust-DOS" />
+                    <KeyField
+                        id="f-key"
+                        hint="Optional: the uuid= in the [game] section of your Rust-DOS game profile. With it, you can correct this version later, on the game's page."
+                    />
                     <ActionError action=add />
                     <p class="form-buttons">
                         <button type="submit" class="btn is-default">

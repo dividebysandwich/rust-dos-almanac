@@ -386,3 +386,27 @@ fn list(items: &[String]) -> String {
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
+
+/// A game profile's UUID, the key that lets whoever added a game or
+/// version correct it without a staff login.
+#[component]
+pub fn KeyField(id: &'static str, #[prop(optional)] required: bool, hint: &'static str) -> impl IntoView {
+    view! {
+        <div class="field wide">
+            <label for=id>"Profile UUID"</label>
+            <input
+                id=id
+                class="input"
+                name="key"
+                required=required
+                minlength="16"
+                maxlength="64"
+                pattern="[A-Za-z0-9\\-]{16,64}"
+                placeholder="0f8fad5b-d9cb-469f-a165-70867728950e"
+                autocomplete="off"
+                spellcheck="false"
+            />
+            <p class="hint">{hint}</p>
+        </div>
+    }
+}

@@ -86,7 +86,10 @@ pub async fn log(db: &DatabaseConnection, actor: &Actor, page: u64) -> Result<Ve
         .into_iter()
         .map(|r| ModLogEntry {
             id: r.id.into(),
-            user: r.user_id.and_then(|u| names.get(&u).cloned()).unwrap_or_else(|| "(deleted)".into()),
+            user: match r.user_id {
+                Some(u) => names.get(&u).cloned().unwrap_or_else(|| "(deleted)".into()),
+                None => "(adder's key)".into(),
+            },
             action: r.action,
             target_type: r.target_type,
             target_id: r.target_id,

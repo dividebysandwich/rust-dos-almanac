@@ -8,7 +8,7 @@
 
 use super::entities::{blessing, game, game_version, report, report_setting, user};
 use super::error::Result;
-use crate::model::{Platform, Rating, RatingSummary, Recommendation, RecommendationSource, RecommendedSetting, Scope};
+use crate::model::{Platform, Rating, RatingSummary, Recommendation, RecommendationSource, RecommendedSetting, ReportNote, Scope};
 use crate::settings_schema;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use std::collections::{BTreeMap, HashMap};
@@ -158,6 +158,32 @@ async fn platform_windows(db: &DatabaseConnection, game: &game::Model, version_i
     Ok(wants_windows(version, &all))
 }
 
+/// At most this many reports' notes come with a consensus.
+pub const MAX_NOTES: usize = 10;
+
+/// The notes of `reports` that have any, newest first. Red reports' count
+/// too: what didn't work is worth knowing.
+fn notes_of<'a>(reports: impl IntoIterator<Item = &'a report::Model>) -> Vec<ReportNote> {
+    let mut out: Vec<ReportNote> = reports
+        .into_iter()
+        .filter(|r| r.notes.is_some() || r.description.is_some())
+        .filter_map(|r| {
+            Some(ReportNote {
+                report_id: r.id.into(),
+                version_id: r.version_id.map(i64::from),
+                rating: Rating::parse(&r.rating)?,
+                notes: r.notes.clone(),
+                description: r.description.clone(),
+                rust_dos_version: r.rust_dos_version.clone(),
+                updated_at: r.updated_at,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(b.report_id.cmp(&a.report_id)));
+    out.truncate(MAX_NOTES);
+    out
+}
+
 /// The recommendation for `game`, for one version or for any.
 pub async fn recommend(db: &DatabaseConnection, game: &game::Model, version_id: Option<i32>) -> Result<Recommendation> {
     let windows = platform_windows(db, game, version_id).await?;
@@ -202,6 +228,7 @@ pub async fn recommend(db: &DatabaseConnection, game: &game::Model, version_id: 
             rating,
             ini: ini_of(&settings),
             settings,
+            notes: notes_of([r]),
         });
     }
 
@@ -211,6 +238,7 @@ pub async fn recommend(db: &DatabaseConnection, game: &game::Model, version_id: 
         _ => (reports, Scope::Game),
     };
     let votes = votes_for(db, &pool).await?;
+    let notes = notes_of(&pool);
     let mut settings = consensus(&votes);
     let voters = votes.iter().filter(|v| weight(v.rating) > 0.0 && !v.settings.is_empty()).count() as u32;
     let reported = !settings.is_empty();
@@ -223,6 +251,7 @@ pub async fn recommend(db: &DatabaseConnection, game: &game::Model, version_id: 
         rating,
         ini: ini_of(&settings),
         settings,
+        notes,
     })
 }
 

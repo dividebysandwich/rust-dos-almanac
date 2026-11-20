@@ -60,7 +60,7 @@ Other commands: `migrate`, `set-password <user>`.
 
 | Method & path | Who | |
 |---|---|---|
-| `GET /schema` | all | Known settings, allowed values and form groups; `version` bumps when they change (2 added `win32_depth`, 3 `fps_cap`) |
+| `GET /schema` | all | Known settings, allowed values and form groups; `version` bumps when they change (2 added `win32_depth`, 3 `fps_cap`, 4 `win32_desktop`, `win32_locale`, `adlibgold`, `svga_toadforce` and `fps_cap=auto`) |
 | `GET /games?q=&platform=all\|dos\|windows&page=` | all | Search name, aliases and slug; `platform` keeps games with a version of that platform |
 | `POST /games/lookup` | all | `{"ra_md5": "…", "files": [{"name", "size", "crc32", "md5", "sha1"}]}` → matching versions with their `platform`, best first |
 | `GET /games/{slug}` | all | Game, versions, files, rating counts |
@@ -112,17 +112,26 @@ and normalised (`586` → `pentium`, `0x220` → `220`, `on` → `true`).
 Versions take `"platform": "dos" | "win16" | "win32"` in `POST /games`
 (`version`), `POST /games/{slug}/versions` and `PATCH /versions/{id}`
 (`null` clears it). Windows settings are `emulator.win32`,
-`win32_version` (`95`, `98`, `98se`) and `win32_depth` (`auto`, `8`, `16`).
+`win32_version` (`95`, `98`, `98se`), `win32_depth` (`auto`, `8`, `16`),
+`win32_desktop` (`640x480`, `800x600`, `1024x768`) and `win32_locale`
+(the built-in Windows' system locales, such as `en-US` or `ru-RU`).
 Rust-DOS's `win32_dlls*` and `win32_trace`, and a profile's `[game] windows=`
 and `[install]`, are host or launch matters and are not accepted.
 
 `emulator.fps_cap` is Rust-DOS's frame rate cap for whichever card shows the
-picture: `off` (`0` is taken as `off`) or 10 to 240, as Rust-DOS's parser
-accepts it. Rust-DOS caps at 60 by default, and benchmarks and timedemos
-report at most the cap, so `off` is a recommendation of its own. The old
+picture: `auto` (Rust-DOS's default: 60 for a program that doesn't wait for
+the display's retrace, none for one that does), `off` (`0` is taken as
+`off`) or 10 to 240, as Rust-DOS's parser accepts it. Benchmarks and
+timedemos report at most the cap, so `off` is a recommendation of its own. The old
 name `voodoo_fps_cap` is accepted in reports and pasted profiles and stored
 as `fps_cap`; given under both names, `fps_cap` wins. Recommendations only
 ever carry `fps_cap`.
+
+Rust-DOS sends every one of its almanac keys (`KEYS` in
+`rust-dos/src/almanac.rs`) with each report, and the almanac rejects a
+report with a key or value it doesn't know. A key or value Rust-DOS adds
+must be added to `src/settings_schema.rs` before a release that sends it;
+`a_current_rust_dos_report_is_accepted` there holds a report as it sends it.
 
 ## Tests
 

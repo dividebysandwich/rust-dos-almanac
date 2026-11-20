@@ -288,7 +288,7 @@ async fn windows_flow() {
     let (_, v) = c.call(Method::PATCH, &format!("/api/v1/versions/{keen_v}"), Some(json!({"label": "1.4"})), Some(&token), "198.51.100.9", None).await;
     assert_eq!(v["platform"], "win16", "a patch without platform leaves it");
     let (_, schema) = c.get("/api/v1/schema").await;
-    assert_eq!(schema["version"], 3);
+    assert_eq!(schema["version"], 4);
     assert!(schema["settings"].as_array().unwrap().iter().any(|s| s["key"] == "win32_depth" && s["group"] == "windows"));
 }
 
@@ -327,7 +327,8 @@ async fn fps_cap_is_reported_and_recommended_under_its_new_name() {
     let (_, schema) = c.get("/api/v1/schema").await;
     let def = schema["settings"].as_array().unwrap().iter().find(|s| s["key"] == "fps_cap").unwrap().clone();
     assert_eq!((def["section"].as_str(), def["group"].as_str()), (Some("emulator"), Some("machine")));
-    assert_eq!(def["options"][0], "off");
+    assert_eq!(def["options"][0], "auto");
+    assert_eq!(def["options"][1], "off");
     assert!(def["options"].as_array().unwrap().contains(&json!("60")));
 }
 

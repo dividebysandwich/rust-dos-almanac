@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 /// Bumped whenever a key or a value domain changes, so clients can notice.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Domain {
@@ -25,8 +25,10 @@ pub enum Domain {
     Cycles,
     /// "6.22", "7.1", "5".
     DosVersion,
-    /// A frame rate cap: `off` (or `0`), or 10 to 240 frames a second.
+    /// A frame rate cap: `auto`, `off` (or `0`), or 10 to 240 frames a second.
     FpsCap,
+    /// A locale name such as "ru-RU", in any case, with a hyphen or an underscore.
+    Locale(&'static [&'static str]),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -49,7 +51,7 @@ impl SettingDef {
     /// Which of [`GROUPS`] the form shows it in.
     pub fn group(&self) -> &'static str {
         match (self.section, self.key) {
-            ("emulator", "win32" | "win32_version" | "win32_depth") => "windows",
+            ("emulator", "win32" | "win32_version" | "win32_depth" | "win32_desktop" | "win32_locale") => "windows",
             ("emulator", _) => "machine",
             ("sound", _) => "sound",
             _ => "input",
@@ -65,7 +67,8 @@ impl SettingDef {
             Domain::HexPort(values) => Some(values.iter().map(|v| format!("{v:x}")).collect()),
             Domain::MemSize => Some(MEMSIZE_PRESETS.iter().map(|v| v.to_string()).collect()),
             Domain::DosVersion => Some(DOS_PRESETS.iter().map(|v| v.to_string()).collect()),
-            Domain::FpsCap => Some(std::iter::once("off".to_string()).chain(FPS_CAP_PRESETS.iter().map(|v| v.to_string())).collect()),
+            Domain::Locale(values) => Some(values.iter().map(|v| v.to_string()).collect()),
+            Domain::FpsCap => Some(["auto", "off"].into_iter().map(String::from).chain(FPS_CAP_PRESETS.iter().map(|v| v.to_string())).collect()),
             Domain::Cycles => None,
         }
     }
@@ -127,7 +130,12 @@ impl SettingDef {
                 let n = if minor.len() == 1 { n * 10 } else { n };
                 Ok(format!("{major}.{n:02}"))
             }
+            Domain::Locale(values) => {
+                let value = value.replace('_', "-");
+                values.iter().find(|v| v.eq_ignore_ascii_case(&value)).map(|v| v.to_string()).ok_or_else(bad)
+            }
             Domain::FpsCap => match value.as_str() {
+                "auto" => Ok("auto".into()),
                 "off" | "0" => Ok("off".into()),
                 _ => {
                     let n: u32 = value.parse().map_err(|_| bad())?;
@@ -159,6 +167,13 @@ const FPS_CAP_PRESETS: &[u32] = &[30, 35, 50, 60, 70, 72, 75, 85, 100, 120, 144]
 const MEMSIZE_PRESETS: &[i64] = &[2, 4, 8, 16, 32, 48, 64, 128, 256, 512];
 const DOS_PRESETS: &[&str] = &["5.00", "6.22", "7.00", "7.10"];
 
+/// The built-in Windows' system locales (`rust-dos/src/win32/nls/locales.rs`).
+const WIN32_LOCALES: &[&str] = &[
+    "en-US", "ru-RU", "pl-PL", "cs-CZ", "hu-HU", "el-GR", "tr-TR", "lt-LT", "lv-LV", "et-EE", "be-BY", "bg-BG",
+    "sr-Cyrl-YU", "uk-UA", "hr-HR", "ro-RO", "sr-Latn-YU", "sk-SK", "sl-SI", "da-DK", "de-DE", "en-GB", "es-ES",
+    "fi-FI", "fr-FR", "it-IT", "nb-NO", "nl-NL", "pt-BR", "pt-PT", "sv-SE",
+];
+
 const IRQS_SB: &[i64] = &[2, 3, 5, 7, 9, 10, 11, 12, 15];
 const IRQS_GUS: &[i64] = &[2, 3, 5, 7, 11, 12, 15];
 
@@ -171,9 +186,35 @@ pub static SETTINGS: &[SettingDef] = &[
         domain: Domain::Choice(
             &[
                 "svga", "svga_s3", "svga_s3virge", "svga_s3virgevx", "svga_verite", "svga_et4000", "svga_voodoo3",
-                "svga_banshee", "svga_ati_3drage", "svga_ati_3drage2", "vga", "ega", "cga", "tandy", "pcjr", "hercules",
+                "svga_banshee", "svga_ati_3drage", "svga_ati_3drage2", "svga_toadforce", "vga", "ega", "cga", "tandy", "pcjr", "hercules",
             ],
-            &[("svga_et3000", "svga"), ("svga_paradise", "svga"), ("vesa_nolfb", "svga"), ("vesa_oldvbe", "svga")],
+            &[
+                ("svga_et3000", "svga"),
+                ("svga_paradise", "svga"),
+                ("vesa_nolfb", "svga"),
+                ("vesa_oldvbe", "svga"),
+                ("s3", "svga_s3"),
+                ("s3trio", "svga_s3"),
+                ("virge", "svga_s3virge"),
+                ("s3virge", "svga_s3virge"),
+                ("virgevx", "svga_s3virgevx"),
+                ("s3virgevx", "svga_s3virgevx"),
+                ("verite", "svga_verite"),
+                ("rendition", "svga_verite"),
+                ("et4000", "svga_et4000"),
+                ("tseng", "svga_et4000"),
+                ("voodoo3", "svga_voodoo3"),
+                ("banshee", "svga_banshee"),
+                ("rage", "svga_ati_3drage"),
+                ("3drage", "svga_ati_3drage"),
+                ("mach64", "svga_ati_3drage"),
+                ("rage2", "svga_ati_3drage2"),
+                ("3drage2", "svga_ati_3drage2"),
+                ("toadforce", "svga_toadforce"),
+                ("vgaonly", "vga"),
+                ("herc", "hercules"),
+                ("hgc", "hercules"),
+            ],
         ),
     },
     SettingDef {
@@ -182,7 +223,20 @@ pub static SETTINGS: &[SettingDef] = &[
         label: "CPU",
         domain: Domain::Choice(
             &["386", "486", "pentium", "pentium_mmx", "k6_2", "pentium_pro", "pentium_ii", "pentium_iii"],
-            &[("586", "pentium"), ("686", "pentium_pro")],
+            &[
+                ("586", "pentium"),
+                ("pentiummmx", "pentium_mmx"),
+                ("mmx", "pentium_mmx"),
+                ("k6-2", "k6_2"),
+                ("k62", "k6_2"),
+                ("686", "pentium_pro"),
+                ("pentiumpro", "pentium_pro"),
+                ("ppro", "pentium_pro"),
+                ("pentiumii", "pentium_ii"),
+                ("pentium2", "pentium_ii"),
+                ("pentiumiii", "pentium_iii"),
+                ("pentium3", "pentium_iii"),
+            ],
         ),
     },
     SettingDef { section: "emulator", key: "core", label: "CPU core", domain: Domain::Choice(&["auto", "dynamic", "normal"], &[]) },
@@ -197,6 +251,8 @@ pub static SETTINGS: &[SettingDef] = &[
     SettingDef { section: "emulator", key: "win32", label: "Built-in Windows", domain: Domain::Bool },
     SettingDef { section: "emulator", key: "win32_version", label: "Windows version", domain: Domain::Choice(&["95", "98", "98se"], &[]) },
     SettingDef { section: "emulator", key: "win32_depth", label: "Windows colour depth", domain: Domain::Choice(&["auto", "8", "16"], &[]) },
+    SettingDef { section: "emulator", key: "win32_desktop", label: "Windows desktop size", domain: Domain::Choice(&["640x480", "800x600", "1024x768"], &[]) },
+    SettingDef { section: "emulator", key: "win32_locale", label: "Windows locale", domain: Domain::Locale(WIN32_LOCALES) },
     SettingDef { section: "emulator", key: "fps_cap", label: "Frame rate cap", domain: Domain::FpsCap },
     SettingDef { section: "emulator", key: "voodoo", label: "3dfx Voodoo", domain: Domain::Bool },
     SettingDef { section: "emulator", key: "voodoo_model", label: "Voodoo model", domain: Domain::Choice(&["voodoo1", "voodoo2"], &[]) },
@@ -219,7 +275,10 @@ pub static SETTINGS: &[SettingDef] = &[
         section: "sound",
         key: "sbtype",
         label: "Sound Blaster",
-        domain: Domain::Choice(&["none", "sb2", "sbpro2", "sb16", "sb16vibra", "awe32"], &[]),
+        domain: Domain::Choice(
+            &["none", "sb2", "sbpro2", "sb16", "sb16vibra", "awe32"],
+            &[("sb20", "sb2"), ("sbpro", "sbpro2"), ("vibra", "sb16vibra"), ("sbawe", "awe32"), ("awe", "awe32")],
+        ),
     },
     SettingDef { section: "sound", key: "sbbase", label: "SB port", domain: Domain::HexPort(&[0x210, 0x220, 0x230, 0x240, 0x250, 0x260, 0x270, 0x280]) },
     SettingDef { section: "sound", key: "irq", label: "SB IRQ", domain: Domain::IntSet(IRQS_SB) },
@@ -240,11 +299,30 @@ pub static SETTINGS: &[SettingDef] = &[
         section: "sound",
         key: "midisynth",
         label: "MIDI synth",
-        domain: Domain::Choice(&["auto", "soundfont", "gus", "mt32", "sc55", "host", "none"], &[]),
+        domain: Domain::Choice(
+            &["auto", "soundfont", "gus", "mt32", "sc55", "host", "none"],
+            &[
+                ("mt-32", "mt32"),
+                ("munt", "mt32"),
+                ("sc-55", "sc55"),
+                ("soundcanvas", "sc55"),
+                ("hostmidi", "host"),
+                ("external", "host"),
+            ],
+        ),
     },
-    SettingDef { section: "sound", key: "mt32model", label: "MT-32 model", domain: Domain::Choice(&["auto", "mt32", "cm32l"], &[]) },
-    SettingDef { section: "sound", key: "lpt_dac", label: "Parallel DAC", domain: Domain::Choice(&["none", "disney", "covox"], &[]) },
-    SettingDef { section: "sound", key: "tandy", label: "Tandy sound", domain: Domain::Choice(&["auto", "on", "off"], &[]) },
+    SettingDef { section: "sound", key: "mt32model", label: "MT-32 model", domain: Domain::Choice(&["auto", "mt32", "cm32l"], &[("mt-32", "mt32"), ("cm-32l", "cm32l")]) },
+    SettingDef { section: "sound", key: "adlibgold", label: "AdLib Gold", domain: Domain::Bool },
+    SettingDef { section: "sound", key: "lpt_dac", label: "Parallel DAC", domain: Domain::Choice(&["none", "disney", "covox"], &[("off", "none"), ("false", "none")]) },
+    SettingDef {
+        section: "sound",
+        key: "tandy",
+        label: "Tandy sound",
+        domain: Domain::Choice(
+            &["auto", "on", "off"],
+            &[("true", "on"), ("yes", "on"), ("1", "on"), ("false", "off"), ("no", "off"), ("0", "off")],
+        ),
+    },
     // [joystick]
     SettingDef {
         section: "joystick",
@@ -320,7 +398,7 @@ pub fn warnings(settings: &[(String, String, String)]) -> Vec<String> {
     }
     let windows = get("win32") == Some("true");
     if !windows {
-        for key in ["win32_version", "win32_depth"] {
+        for key in ["win32_version", "win32_depth", "win32_desktop", "win32_locale"] {
             if get(key).is_some() {
                 out.push(format!("{key} has no effect without win32=true"));
             }
@@ -415,6 +493,7 @@ mod tests {
 
     #[test]
     fn fps_cap_takes_off_or_10_to_240() {
+        assert_eq!(norm("emulator", "fps_cap", "AUTO").unwrap(), "auto");
         assert_eq!(norm("emulator", "fps_cap", "OFF").unwrap(), "off");
         assert_eq!(norm("emulator", "fps_cap", "0").unwrap(), "off");
         assert_eq!(norm("emulator", "fps_cap", " 60 ").unwrap(), "60");
@@ -426,6 +505,8 @@ mod tests {
         let def = find("emulator", "fps_cap").unwrap();
         assert_eq!(def.numeric_value("60"), Some(60.0));
         assert_eq!(def.numeric_value("off"), None);
+        assert_eq!(def.numeric_value("auto"), None);
+        assert_eq!(def.options().unwrap()[..2], ["auto", "off"]);
         assert_eq!(def.group(), "machine");
     }
 
@@ -447,10 +528,76 @@ mod tests {
     }
 
     #[test]
+    fn windows_desktop_and_locale() {
+        assert_eq!(norm("emulator", "win32_desktop", "1024X768").unwrap(), "1024x768");
+        assert!(norm("emulator", "win32_desktop", "1280x1024").is_err());
+        assert_eq!(norm("emulator", "win32_locale", "ru_ru").unwrap(), "ru-RU");
+        assert_eq!(norm("emulator", "win32_locale", "SR-LATN-YU").unwrap(), "sr-Latn-YU");
+        assert!(norm("emulator", "win32_locale", "ja-JP").is_err());
+        assert_eq!(find("emulator", "win32_desktop").unwrap().group(), "windows");
+        assert_eq!(find("emulator", "win32_locale").unwrap().group(), "windows");
+    }
+
+    #[test]
+    fn takes_rust_dos_aliases() {
+        assert_eq!(norm("emulator", "machine", "toadforce").unwrap(), "svga_toadforce");
+        assert_eq!(norm("emulator", "machine", "svga_toadforce").unwrap(), "svga_toadforce");
+        assert_eq!(norm("emulator", "machine", "herc").unwrap(), "hercules");
+        assert_eq!(norm("emulator", "cpu", "pentium2").unwrap(), "pentium_ii");
+        assert_eq!(norm("emulator", "cpu", "k6-2").unwrap(), "k6_2");
+        assert_eq!(norm("sound", "sbtype", "sbpro").unwrap(), "sbpro2");
+        assert_eq!(norm("sound", "midisynth", "munt").unwrap(), "mt32");
+        assert_eq!(norm("sound", "mt32model", "cm-32l").unwrap(), "cm32l");
+        assert_eq!(norm("sound", "lpt_dac", "off").unwrap(), "none");
+        assert_eq!(norm("sound", "tandy", "yes").unwrap(), "on");
+        assert_eq!(norm("sound", "adlibgold", "on").unwrap(), "true");
+    }
+
+    /// What Rust-DOS sends with a report: every one of its almanac keys
+    /// (`rust-dos/src/almanac.rs`), as its configuration writes them.
+    #[test]
+    fn a_current_rust_dos_report_is_accepted() {
+        let sent: &[(&str, &[(&str, &str)])] = &[
+            (
+                "emulator",
+                &[
+                    ("machine", "svga_toadforce"), ("cpu", "pentium_ii"), ("core", "auto"), ("fpu", "exact"),
+                    ("cycles", "auto"), ("memsize", "64"), ("ems", "true"), ("umb", "true"), ("dpmi", "true"),
+                    ("dos_high", "true"), ("dos_version", "7.10"), ("win32", "true"), ("win32_version", "98se"),
+                    ("win32_depth", "16"), ("win32_desktop", "800x600"), ("win32_locale", "en-US"), ("voodoo", "false"),
+                    ("voodoo_model", "voodoo1"), ("voodoo_memory", "4"), ("powervr", "off"), ("composite", "auto"),
+                    ("monochrome", "off"), ("hard_disk_speed", "fast"), ("floppy_disk_speed", "fast"), ("fps_cap", "auto"),
+                ],
+            ),
+            (
+                "sound",
+                &[
+                    ("sbtype", "sb16"), ("sbbase", "220"), ("irq", "7"), ("dma", "1"), ("hdma", "5"), ("awe32ram", "512"),
+                    ("opl", "opl3"), ("gus", "false"), ("gusbase", "240"), ("gusirq", "5"), ("gusdma", "3"),
+                    ("midisynth", "auto"), ("mt32model", "auto"), ("adlibgold", "false"), ("lpt_dac", "none"), ("tandy", "auto"),
+                ],
+            ),
+            ("joystick", &[("joysticktype", "auto")]),
+        ];
+        let input: BTreeMap<String, BTreeMap<String, String>> = sent
+            .iter()
+            .map(|(section, keys)| (section.to_string(), keys.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))
+            .collect();
+        let out = normalize_all(&input).unwrap();
+        assert_eq!(out.len(), 42, "Rust-DOS's KEYS has 42");
+        for (section, keys) in sent {
+            for (key, value) in *keys {
+                assert!(out.iter().any(|(s, k, v)| s == section && k == key && v == value), "{section}.{key}={value}");
+            }
+        }
+    }
+
+    #[test]
     fn windows_warnings() {
         let s = |list: &[(&str, &str)]| list.iter().map(|(k, v)| ("emulator".to_string(), k.to_string(), v.to_string())).collect::<Vec<_>>();
         assert_eq!(warnings(&s(&[("win32_depth", "8")])).len(), 1);
         assert_eq!(warnings(&s(&[("win32", "false"), ("win32_version", "98se"), ("win32_depth", "16")])).len(), 2);
+        assert_eq!(warnings(&s(&[("win32_desktop", "800x600"), ("win32_locale", "de-DE")])).len(), 2);
         assert_eq!(warnings(&s(&[("win32", "true"), ("cpu", "486")])).len(), 1);
         assert!(warnings(&s(&[("win32", "true"), ("cpu", "pentium_ii"), ("win32_depth", "8")])).is_empty());
     }

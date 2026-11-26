@@ -60,7 +60,7 @@ Other commands: `migrate`, `set-password <user>`.
 
 | Method & path | Who | |
 |---|---|---|
-| `GET /schema` | all | Known settings, allowed values and form groups; `version` bumps when they change (2 added `win32_depth`, 3 `fps_cap`, 4 `win32_desktop`, `win32_locale`, `adlibgold`, `svga_toadforce` and `fps_cap=auto`) |
+| `GET /schema` | all | Known settings, allowed values and form groups; `version` bumps when they change (2 added `win32_depth`, 3 `fps_cap`, 4 `win32_desktop`, `win32_locale`, `adlibgold`, `svga_toadforce` and `fps_cap=auto`, 5 `opl=auto`, `opl=dualopl2`, `sbtype=sbpro1` and `sbtype=gb`) |
 | `GET /games?q=&platform=all\|dos\|windows&page=` | all | Search name, aliases and slug; `platform` keeps games with a version of that platform |
 | `POST /games/lookup` | all | `{"ra_md5": "…", "files": [{"name", "size", "crc32", "md5", "sha1"}]}` → matching versions with their `platform`, best first |
 | `GET /games/{slug}` | all | Game, versions, files, rating counts |
@@ -132,6 +132,10 @@ Rust-DOS sends every one of its almanac keys (`KEYS` in
 report with a key or value it doesn't know. A key or value Rust-DOS adds
 must be added to `src/settings_schema.rs` before a release that sends it;
 `a_current_rust_dos_report_is_accepted` there holds a report as it sends it.
+`RUST_DOS_TAKES` in its tests lists, for each key, the values Rust-DOS's
+configuration parser takes (aliases too); the tests check that the almanac
+takes every one of them and offers none Rust-DOS doesn't. Update it together
+with the schema whenever Rust-DOS's parser or `KEYS` change.
 
 ## Tests
 

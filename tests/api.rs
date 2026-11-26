@@ -288,7 +288,7 @@ async fn windows_flow() {
     let (_, v) = c.call(Method::PATCH, &format!("/api/v1/versions/{keen_v}"), Some(json!({"label": "1.4"})), Some(&token), "198.51.100.9", None).await;
     assert_eq!(v["platform"], "win16", "a patch without platform leaves it");
     let (_, schema) = c.get("/api/v1/schema").await;
-    assert_eq!(schema["version"], 4);
+    assert_eq!(schema["version"], 5);
     assert!(schema["settings"].as_array().unwrap().iter().any(|s| s["key"] == "win32_depth" && s["group"] == "windows"));
 }
 

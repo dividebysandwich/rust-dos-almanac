@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 /// Bumped whenever a key or a value domain changes, so clients can notice.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Domain {
@@ -17,8 +17,9 @@ pub enum Domain {
     Bool,
     /// Whole MB, optional "MB" suffix.
     MemSize,
-    /// One of the listed integers.
-    IntSet(&'static [i64]),
+    /// One of the listed integers, optionally followed by one of the listed
+    /// unit suffixes ("8mb", "512k").
+    IntSet(&'static [i64], &'static [&'static str]),
     /// A hex port: "220", "220h" or "0x220", one of the listed values.
     HexPort(&'static [u16]),
     /// `max`, `auto`, `auto N` or N.
@@ -63,7 +64,7 @@ impl SettingDef {
         match self.domain {
             Domain::Choice(values, _) => Some(values.iter().map(|v| v.to_string()).collect()),
             Domain::Bool => Some(vec!["true".into(), "false".into()]),
-            Domain::IntSet(values) => Some(values.iter().map(|v| v.to_string()).collect()),
+            Domain::IntSet(values, _) => Some(values.iter().map(|v| v.to_string()).collect()),
             Domain::HexPort(values) => Some(values.iter().map(|v| format!("{v:x}")).collect()),
             Domain::MemSize => Some(MEMSIZE_PRESETS.iter().map(|v| v.to_string()).collect()),
             Domain::DosVersion => Some(DOS_PRESETS.iter().map(|v| v.to_string()).collect()),
@@ -74,7 +75,7 @@ impl SettingDef {
     }
 
     pub fn is_numeric(&self) -> bool {
-        matches!(self.domain, Domain::MemSize | Domain::IntSet(_) | Domain::Cycles | Domain::FpsCap)
+        matches!(self.domain, Domain::MemSize | Domain::IntSet(..) | Domain::Cycles | Domain::FpsCap)
     }
 
     /// The canonical form of `raw`, or why it isn't valid.
@@ -97,8 +98,9 @@ impl SettingDef {
                 let n: i64 = value.strip_suffix("mb").unwrap_or(&value).trim_end().parse().map_err(|_| bad())?;
                 if (MIN_MEMSIZE..=MAX_MEMSIZE).contains(&n) { Ok(n.to_string()) } else { Err(bad()) }
             }
-            Domain::IntSet(values) => {
-                let n: i64 = value.parse().map_err(|_| bad())?;
+            Domain::IntSet(values, units) => {
+                let digits = units.iter().find_map(|u| value.strip_suffix(u)).unwrap_or(&value).trim_end();
+                let n: i64 = digits.parse().map_err(|_| bad())?;
                 if values.contains(&n) { Ok(n.to_string()) } else { Err(bad()) }
             }
             Domain::HexPort(values) => {
@@ -148,7 +150,7 @@ impl SettingDef {
     /// A number to order values by when picking a median, if there is one.
     pub fn numeric_value(&self, normalized: &str) -> Option<f64> {
         match self.domain {
-            Domain::MemSize | Domain::IntSet(_) | Domain::FpsCap => normalized.parse().ok(),
+            Domain::MemSize | Domain::IntSet(..) | Domain::FpsCap => normalized.parse().ok(),
             Domain::Cycles => normalized.trim_start_matches("auto ").parse().ok(),
             Domain::HexPort(_) => u16::from_str_radix(normalized, 16).ok().map(f64::from),
             Domain::DosVersion => normalized.parse().ok(),
@@ -255,9 +257,17 @@ pub static SETTINGS: &[SettingDef] = &[
     SettingDef { section: "emulator", key: "win32_locale", label: "Windows locale", domain: Domain::Locale(WIN32_LOCALES) },
     SettingDef { section: "emulator", key: "fps_cap", label: "Frame rate cap", domain: Domain::FpsCap },
     SettingDef { section: "emulator", key: "voodoo", label: "3dfx Voodoo", domain: Domain::Bool },
-    SettingDef { section: "emulator", key: "voodoo_model", label: "Voodoo model", domain: Domain::Choice(&["voodoo1", "voodoo2"], &[]) },
-    SettingDef { section: "emulator", key: "voodoo_memory", label: "Voodoo memory (MB)", domain: Domain::IntSet(&[4, 8, 12]) },
-    SettingDef { section: "emulator", key: "powervr", label: "PowerVR", domain: Domain::Choice(&["off", "pcx1", "pcx2"], &[]) },
+    SettingDef { section: "emulator", key: "voodoo_model", label: "Voodoo model", domain: Domain::Choice(&["voodoo1", "voodoo2"], &[("voodoo", "voodoo1"), ("1", "voodoo1"), ("2", "voodoo2")]) },
+    SettingDef { section: "emulator", key: "voodoo_memory", label: "Voodoo memory (MB)", domain: Domain::IntSet(&[4, 8, 12], &["mb"]) },
+    SettingDef {
+        section: "emulator",
+        key: "powervr",
+        label: "PowerVR",
+        domain: Domain::Choice(
+            &["off", "pcx1", "pcx2"],
+            &[("false", "off"), ("no", "off"), ("none", "off"), ("on", "pcx2"), ("true", "pcx2"), ("yes", "pcx2")],
+        ),
+    },
     SettingDef {
         section: "emulator",
         key: "composite",
@@ -276,25 +286,25 @@ pub static SETTINGS: &[SettingDef] = &[
         key: "sbtype",
         label: "Sound Blaster",
         domain: Domain::Choice(
-            &["none", "sb2", "sbpro2", "sb16", "sb16vibra", "awe32"],
+            &["none", "gb", "sb2", "sbpro1", "sbpro2", "sb16", "sb16vibra", "awe32"],
             &[("sb20", "sb2"), ("sbpro", "sbpro2"), ("vibra", "sb16vibra"), ("sbawe", "awe32"), ("awe", "awe32")],
         ),
     },
     SettingDef { section: "sound", key: "sbbase", label: "SB port", domain: Domain::HexPort(&[0x210, 0x220, 0x230, 0x240, 0x250, 0x260, 0x270, 0x280]) },
-    SettingDef { section: "sound", key: "irq", label: "SB IRQ", domain: Domain::IntSet(IRQS_SB) },
-    SettingDef { section: "sound", key: "dma", label: "SB DMA", domain: Domain::IntSet(&[0, 1, 3]) },
-    SettingDef { section: "sound", key: "hdma", label: "SB high DMA", domain: Domain::IntSet(&[5, 6, 7]) },
+    SettingDef { section: "sound", key: "irq", label: "SB IRQ", domain: Domain::IntSet(IRQS_SB, &[]) },
+    SettingDef { section: "sound", key: "dma", label: "SB DMA", domain: Domain::IntSet(&[0, 1, 3], &[]) },
+    SettingDef { section: "sound", key: "hdma", label: "SB high DMA", domain: Domain::IntSet(&[5, 6, 7], &[]) },
     SettingDef {
         section: "sound",
         key: "awe32ram",
         label: "AWE32 RAM (KB)",
-        domain: Domain::IntSet(&[0, 512, 1024, 2048, 4096, 8192, 12288, 16384, 28672]),
+        domain: Domain::IntSet(&[0, 512, 1024, 2048, 4096, 8192, 12288, 16384, 28672], &["kb", "k"]),
     },
-    SettingDef { section: "sound", key: "opl", label: "FM chip", domain: Domain::Choice(&["opl3", "opl2"], &[]) },
+    SettingDef { section: "sound", key: "opl", label: "FM chip", domain: Domain::Choice(&["auto", "opl3", "opl2", "dualopl2"], &[]) },
     SettingDef { section: "sound", key: "gus", label: "Gravis Ultrasound", domain: Domain::Bool },
     SettingDef { section: "sound", key: "gusbase", label: "GUS port", domain: Domain::HexPort(&[0x210, 0x220, 0x240, 0x250, 0x260]) },
-    SettingDef { section: "sound", key: "gusirq", label: "GUS IRQ", domain: Domain::IntSet(IRQS_GUS) },
-    SettingDef { section: "sound", key: "gusdma", label: "GUS DMA", domain: Domain::IntSet(&[1, 3, 5, 6, 7]) },
+    SettingDef { section: "sound", key: "gusirq", label: "GUS IRQ", domain: Domain::IntSet(IRQS_GUS, &[]) },
+    SettingDef { section: "sound", key: "gusdma", label: "GUS DMA", domain: Domain::IntSet(&[1, 3, 5, 6, 7], &[]) },
     SettingDef {
         section: "sound",
         key: "midisynth",
@@ -573,7 +583,7 @@ mod tests {
                 "sound",
                 &[
                     ("sbtype", "sb16"), ("sbbase", "220"), ("irq", "7"), ("dma", "1"), ("hdma", "5"), ("awe32ram", "512"),
-                    ("opl", "opl3"), ("gus", "false"), ("gusbase", "240"), ("gusirq", "5"), ("gusdma", "3"),
+                    ("opl", "auto"), ("gus", "false"), ("gusbase", "240"), ("gusirq", "5"), ("gusdma", "3"),
                     ("midisynth", "auto"), ("mt32model", "auto"), ("adlibgold", "false"), ("lpt_dac", "none"), ("tandy", "auto"),
                 ],
             ),
@@ -590,6 +600,136 @@ mod tests {
                 assert!(out.iter().any(|(s, k, v)| s == section && k == key && v == value), "{section}.{key}={value}");
             }
         }
+    }
+
+    /// What Rust-DOS's configuration parser takes for each of its almanac
+    /// keys (`KEYS` in `rust-dos/src/almanac.rs`), from `src/config/parse.rs`,
+    /// `src/config/types.rs` and the types they call. A setting with a list of
+    /// values has every one of them here, aliases too; a range has its ends
+    /// and a few values between. Change this together with [`SETTINGS`]
+    /// whenever Rust-DOS's parser or `KEYS` change.
+    const RUST_DOS_TAKES: &[(&str, &str, &[&str])] = &[
+        (
+            "emulator",
+            "machine",
+            &[
+                "svga", "svga_et3000", "svga_paradise", "vesa_nolfb", "vesa_oldvbe", "svga_s3", "s3", "s3trio",
+                "svga_s3virge", "virge", "s3virge", "svga_s3virgevx", "virgevx", "s3virgevx", "svga_verite", "verite",
+                "rendition", "svga_et4000", "et4000", "tseng", "svga_voodoo3", "voodoo3", "svga_banshee", "banshee",
+                "svga_ati_3drage", "rage", "3drage", "mach64", "svga_ati_3drage2", "rage2", "3drage2", "svga_toadforce",
+                "toadforce", "vga", "vgaonly", "ega", "cga", "hercules", "herc", "hgc", "tandy", "pcjr",
+            ],
+        ),
+        (
+            "emulator",
+            "cpu",
+            &[
+                "386", "486", "pentium", "586", "pentium_mmx", "pentiummmx", "mmx", "k6_2", "k6-2", "k62", "pentium_pro",
+                "pentiumpro", "ppro", "686", "pentium_ii", "pentiumii", "pentium2", "pentium_iii", "pentiumiii", "pentium3",
+            ],
+        ),
+        ("emulator", "core", &["auto", "dynamic", "normal"]),
+        ("emulator", "fpu", &["exact", "fast"]),
+        ("emulator", "cycles", &["auto", "max", "100", "30000", "2000000", "auto 100", "auto 2000000"]),
+        ("emulator", "memsize", &["2", "16", "16MB", "16 mb", "512"]),
+        ("emulator", "ems", BOOL),
+        ("emulator", "umb", BOOL),
+        ("emulator", "dpmi", BOOL),
+        ("emulator", "dos_high", BOOL),
+        ("emulator", "dos_version", &["2", "5", "5.0", "6.22", "7.1", "7.10", "9.99"]),
+        ("emulator", "win32", BOOL),
+        ("emulator", "win32_version", &["95", "98", "98se"]),
+        ("emulator", "win32_depth", &["auto", "8", "16"]),
+        ("emulator", "win32_desktop", &["640x480", "800x600", "1024x768"]),
+        (
+            "emulator",
+            "win32_locale",
+            &[
+                "en-US", "ru-RU", "pl-PL", "cs-CZ", "hu-HU", "el-GR", "tr-TR", "lt-LT", "lv-LV", "et-EE", "be-BY", "bg-BG",
+                "sr-Cyrl-YU", "uk-UA", "hr-HR", "ro-RO", "sr-Latn-YU", "sk-SK", "sl-SI", "da-DK", "de-DE", "en-GB", "es-ES",
+                "fi-FI", "fr-FR", "it-IT", "nb-NO", "nl-NL", "pt-BR", "pt-PT", "sv-SE",
+            ],
+        ),
+        ("emulator", "voodoo", BOOL),
+        ("emulator", "voodoo_model", &["voodoo1", "voodoo", "1", "voodoo2", "2"]),
+        ("emulator", "voodoo_memory", &["4", "4mb", "8", "8mb", "12", "12mb"]),
+        ("emulator", "powervr", &["off", "false", "no", "none", "pcx1", "pcx2", "on", "true", "yes"]),
+        ("emulator", "composite", &["auto", "on", "true", "yes", "1", "off", "false", "no", "0"]),
+        ("emulator", "monochrome", &["off", "white", "amber", "green"]),
+        ("emulator", "hard_disk_speed", &["maximum", "fast", "medium", "slow"]),
+        ("emulator", "floppy_disk_speed", &["maximum", "fast", "medium", "slow"]),
+        ("emulator", "fps_cap", &["auto", "off", "0", "10", "60", "240"]),
+        (
+            "sound",
+            "sbtype",
+            &["none", "gb", "sb2", "sb20", "sbpro1", "sbpro2", "sbpro", "sb16", "sb16vibra", "vibra", "awe32", "sbawe", "awe"],
+        ),
+        ("sound", "sbbase", &["210", "220", "230", "240", "250", "260", "270", "280", "0x220"]),
+        ("sound", "irq", &["2", "3", "5", "7", "9", "10", "11", "12", "15"]),
+        ("sound", "dma", &["0", "1", "3"]),
+        ("sound", "hdma", &["5", "6", "7"]),
+        ("sound", "awe32ram", &["0", "512", "512k", "512kb", "1024", "2048", "4096", "8192", "12288", "16384", "28672"]),
+        ("sound", "opl", &["auto", "opl3", "opl2", "dualopl2"]),
+        ("sound", "gus", BOOL),
+        ("sound", "gusbase", &["210", "220", "240", "250", "260"]),
+        ("sound", "gusirq", &["2", "3", "5", "7", "11", "12", "15"]),
+        ("sound", "gusdma", &["1", "3", "5", "6", "7"]),
+        (
+            "sound",
+            "midisynth",
+            &["auto", "soundfont", "gus", "mt32", "mt-32", "munt", "sc55", "sc-55", "soundcanvas", "host", "hostmidi", "external", "none"],
+        ),
+        ("sound", "mt32model", &["auto", "mt32", "mt-32", "cm32l", "cm-32l"]),
+        ("sound", "adlibgold", BOOL),
+        ("sound", "lpt_dac", &["none", "off", "false", "disney", "covox"]),
+        ("sound", "tandy", &["auto", "on", "true", "yes", "1", "off", "false", "no", "0"]),
+        ("joystick", "joysticktype", &["auto", "4axis", "2axis", "mouse", "none"]),
+    ];
+    const BOOL: &[&str] = &["true", "on", "yes", "1", "false", "off", "no", "0"];
+
+    /// The keys are Rust-DOS's `KEYS`, and every value its parser takes is
+    /// taken here, so a report from any setup Rust-DOS runs is accepted.
+    #[test]
+    fn takes_every_value_rust_dos_takes() {
+        assert_eq!(RUST_DOS_TAKES.len(), 42, "Rust-DOS's KEYS has 42");
+        assert_eq!(RUST_DOS_TAKES.len(), SETTINGS.len());
+        for def in SETTINGS {
+            assert!(RUST_DOS_TAKES.iter().any(|(s, k, _)| *s == def.section && *k == def.key), "{} isn't in RUST_DOS_TAKES", def.id());
+        }
+        for (section, key, values) in RUST_DOS_TAKES {
+            let def = find(section, key).unwrap_or_else(|| panic!("{section}.{key} isn't a setting"));
+            for value in *values {
+                assert!(def.normalize(value).is_ok(), "{section}.{key}={value}, which Rust-DOS takes");
+            }
+        }
+    }
+
+    /// The other way: every value the almanac offers or stores for a setting
+    /// with a list of values is one Rust-DOS's parser takes, so a
+    /// recommendation never carries one it rejects.
+    #[test]
+    fn offers_only_values_rust_dos_takes() {
+        for (section, key, values) in RUST_DOS_TAKES {
+            let def = find(section, key).unwrap();
+            if !matches!(def.domain, Domain::Choice(..) | Domain::Bool | Domain::IntSet(..) | Domain::HexPort(_) | Domain::Locale(_)) {
+                continue;
+            }
+            for option in def.options().unwrap() {
+                assert!(values.iter().any(|v| v.eq_ignore_ascii_case(&option)), "{section}.{key}={option}, which Rust-DOS doesn't take");
+            }
+        }
+    }
+
+    #[test]
+    fn opl_and_sbtype_take_rust_dos_defaults_and_cards() {
+        assert_eq!(norm("sound", "opl", "AUTO").unwrap(), "auto");
+        assert_eq!(norm("sound", "opl", "DualOPL2").unwrap(), "dualopl2");
+        assert_eq!(norm("sound", "sbtype", "SBPro1").unwrap(), "sbpro1");
+        assert_eq!(norm("sound", "sbtype", "gb").unwrap(), "gb");
+        assert_eq!(norm("sound", "awe32ram", "512K").unwrap(), "512");
+        assert_eq!(norm("emulator", "voodoo_memory", "8 MB").unwrap(), "8");
+        assert!(norm("sound", "irq", "5k").is_err());
+        assert_eq!(find("sound", "opl").unwrap().options().unwrap()[0], "auto");
     }
 
     #[test]

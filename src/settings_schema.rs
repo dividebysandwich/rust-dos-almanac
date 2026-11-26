@@ -1,14 +1,16 @@
 //! The Rust-DOS settings the almanac knows about, with the values Rust-DOS
 //! accepts for each (`rust-dos/src/config/parse.rs` and `types.rs`).
 //!
-//! Only settings that describe the emulated machine are here. Host-side
-//! display options, `[drives]`, `[autoexec]` and file paths are left out on
-//! purpose: a public database must not hand commands or paths to emulators.
+//! Only settings that describe the emulated machine are here, and
+//! `renderer`, what draws its 3D cards, which a game may need one way. Other
+//! host-side display options, `[drives]`, `[autoexec]` and file paths are
+//! left out on purpose: a public database must not hand commands or paths to
+//! emulators.
 
 use std::collections::BTreeMap;
 
 /// Bumped whenever a key or a value domain changes, so clients can notice.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Domain {
@@ -176,6 +178,9 @@ const WIN32_LOCALES: &[&str] = &[
     "fi-FI", "fr-FR", "it-IT", "nb-NO", "nl-NL", "pt-BR", "pt-PT", "sv-SE",
 ];
 
+/// What draws the 3dfx cards and the ToadForce on the host (`renderer`).
+const RENDERERS: &[&str] = &["auto", "opengl", "software"];
+
 const IRQS_SB: &[i64] = &[2, 3, 5, 7, 9, 10, 11, 12, 15];
 const IRQS_GUS: &[i64] = &[2, 3, 5, 7, 11, 12, 15];
 
@@ -219,6 +224,7 @@ pub static SETTINGS: &[SettingDef] = &[
             ],
         ),
     },
+    SettingDef { section: "emulator", key: "renderer", label: "3D drawn by", domain: Domain::Choice(RENDERERS, &[]) },
     SettingDef {
         section: "emulator",
         key: "cpu",
@@ -348,7 +354,63 @@ pub const SECTIONS: &[&str] = &["emulator", "sound", "joystick"];
 /// Old names Rust-DOS still reads, as (section, old key, current key).
 /// [`find`] takes them and gives the current setting; nothing is stored or
 /// sent under an old name.
-pub const OLD_NAMES: &[(&str, &str, &str)] = &[("emulator", "voodoo_fps_cap", "fps_cap")];
+pub const OLD_NAMES: &[(&str, &str, &str)] = &[
+    ("emulator", "voodoo_fps_cap", "fps_cap"),
+    ("emulator", "voodoo_renderer", "renderer"),
+    ("emulator", "toadforce_renderer", "renderer"),
+];
+
+/// The two settings `renderer` of `[emulator]` replaced (rust-dos#2081),
+/// one for each card, with the values each took: what draws a 3dfx card
+/// and what draws a ToadForce. Together they give one `renderer` value
+/// ([`renderer_of`]) rather than each replacing the other.
+pub const RENDERER_OLD_NAMES: [(&str, &[&str]); 2] =
+    [("voodoo_renderer", &["software", "opengl"]), ("toadforce_renderer", &["auto", "opengl", "software"])];
+
+/// Which of [`RENDERER_OLD_NAMES`] `key` of `section` is.
+pub fn renderer_old_name(section: &str, key: &str) -> Option<usize> {
+    if !section.trim().eq_ignore_ascii_case("emulator") {
+        return None;
+    }
+    RENDERER_OLD_NAMES.iter().position(|(old, _)| old.eq_ignore_ascii_case(key.trim()))
+}
+
+/// The value an old renderer line (`which` of [`RENDERER_OLD_NAMES`]) gives,
+/// lower case, or why it isn't one Rust-DOS took.
+pub fn old_renderer_value(which: usize, raw: &str) -> Result<&'static str, String> {
+    let (key, values) = RENDERER_OLD_NAMES[which];
+    let value = raw.trim().to_ascii_lowercase();
+    values.iter().find(|v| **v == value).copied().ok_or_else(|| format!("invalid value '{}' for emulator.{key}", raw.trim()))
+}
+
+/// The `renderer` value of one file, as Rust-DOS reads it
+/// (`Config::renderer` in `rust-dos/src/config.rs`): `renderer` is the last
+/// `renderer` line's value, and `voodoo` and `toadforce` those of the old
+/// lines after it ([`RENDERER_OLD_NAMES`]), all lower case.
+///
+/// A card without an old line takes `renderer`'s value. Both old lines
+/// give `software` when both say `software`, `opengl` when
+/// `voodoo_renderer` is `opengl`, and `auto` otherwise: the pairs the
+/// settings window of an earlier Rust-DOS wrote. `voodoo_renderer=opengl`
+/// with `toadforce_renderer=software`, or a card's part of either from a
+/// `renderer` line before the other's old line, asks for two renderers,
+/// which no value stands for, and is an error, as it is in Rust-DOS: its
+/// message goes after the lines that ask for them. None when no
+/// line sets any of them.
+pub fn renderer_of(renderer: Option<&str>, voodoo: Option<&str>, toadforce: Option<&str>) -> Result<Option<&'static str>, String> {
+    let canonical = |v: &str| RENDERERS.iter().copied().find(|r| *r == v);
+    let base = renderer.filter(|r| *r != "auto");
+    let (voodoo, toadforce) = (voodoo.or(base).and_then(canonical), toadforce.or(base).and_then(canonical));
+    match (voodoo, toadforce) {
+        (Some("opengl"), Some("software")) => Err("ask for two renderers, the 3dfx cards on OpenGL and the ToadForce in software; \
+             use one renderer line in their place: renderer=opengl or renderer=software"
+            .into()),
+        (Some("software"), Some("auto" | "opengl")) => Ok(Some("auto")),
+        (Some("auto"), Some(other)) | (Some(other), Some("auto")) => Ok(Some(other)),
+        (Some(same), Some(_)) => Ok(Some(same)),
+        (one, other) => Ok(one.or(other).or(renderer.and_then(canonical))),
+    }
+}
 
 pub fn find(section: &str, key: &str) -> Option<&'static SettingDef> {
     let (section, key) = (section.trim().to_ascii_lowercase(), key.trim().to_ascii_lowercase());
@@ -370,9 +432,12 @@ pub fn order(section: &str, key: &str) -> usize {
 /// `{section: {key: value}}` as submitted, validated and normalised into
 /// `(section, key, value)` triples in schema order. Empty values are dropped.
 /// A setting under an old name takes its current one; given under both, the
-/// current name wins.
+/// current name wins. The old renderer settings, `voodoo_renderer` and
+/// `toadforce_renderer`, are read together, as Rust-DOS reads them
+/// ([`renderer_of`]), unless `renderer` is given.
 pub fn normalize_all(input: &BTreeMap<String, BTreeMap<String, String>>) -> Result<Vec<(String, String, String)>, String> {
     let mut out: Vec<(String, String, String)> = Vec::new();
+    let mut old_renderer: [Option<&str>; 2] = [None, None];
     for (section, keys) in input {
         // Old names first, so the current name's value replaces theirs.
         let mut keys: Vec<_> = keys.iter().collect();
@@ -381,11 +446,23 @@ pub fn normalize_all(input: &BTreeMap<String, BTreeMap<String, String>>) -> Resu
             if value.trim().is_empty() {
                 continue;
             }
+            if let Some(which) = renderer_old_name(section, key) {
+                old_renderer[which] = Some(old_renderer_value(which, value)?);
+                continue;
+            }
             let def = find(section, key).ok_or_else(|| format!("unknown setting {section}.{key}"))?;
             let value = def.normalize(value)?;
             out.retain(|(s, k, _)| !(s == def.section && k == def.key));
             out.push((def.section.to_string(), def.key.to_string(), value));
         }
+    }
+    let has_renderer = out.iter().any(|(s, k, _)| s == "emulator" && k == "renderer");
+    let renderer = || {
+        renderer_of(None, old_renderer[0], old_renderer[1])
+            .map_err(|e| format!("emulator.voodoo_renderer=opengl and emulator.toadforce_renderer=software {e}"))
+    };
+    if !has_renderer && let Some(value) = renderer()? {
+        out.push(("emulator".into(), "renderer".into(), value.into()));
     }
     out.sort_by_key(|(s, k, _)| order(s, k));
     Ok(out)
@@ -607,7 +684,8 @@ mod tests {
     /// `src/config/types.rs` and the types they call. A setting with a list of
     /// values has every one of them here, aliases too; a range has its ends
     /// and a few values between. Change this together with [`SETTINGS`]
-    /// whenever Rust-DOS's parser or `KEYS` change.
+    /// whenever Rust-DOS's parser or `KEYS` change. `renderer`
+    /// (rust-dos#2081) is taken ahead of Rust-DOS's `KEYS`, which is to send it.
     const RUST_DOS_TAKES: &[(&str, &str, &[&str])] = &[
         (
             "emulator",
@@ -620,6 +698,7 @@ mod tests {
                 "toadforce", "vga", "vgaonly", "ega", "cga", "hercules", "herc", "hgc", "tandy", "pcjr",
             ],
         ),
+        ("emulator", "renderer", &["auto", "opengl", "software"]),
         (
             "emulator",
             "cpu",
@@ -691,7 +770,7 @@ mod tests {
     /// taken here, so a report from any setup Rust-DOS runs is accepted.
     #[test]
     fn takes_every_value_rust_dos_takes() {
-        assert_eq!(RUST_DOS_TAKES.len(), 42, "Rust-DOS's KEYS has 42");
+        assert_eq!(RUST_DOS_TAKES.len(), 43, "Rust-DOS's KEYS has 42, and renderer is to come");
         assert_eq!(RUST_DOS_TAKES.len(), SETTINGS.len());
         for def in SETTINGS {
             assert!(RUST_DOS_TAKES.iter().any(|(s, k, _)| *s == def.section && *k == def.key), "{} isn't in RUST_DOS_TAKES", def.id());
@@ -730,6 +809,38 @@ mod tests {
         assert_eq!(norm("emulator", "voodoo_memory", "8 MB").unwrap(), "8");
         assert!(norm("sound", "irq", "5k").is_err());
         assert_eq!(find("sound", "opl").unwrap().options().unwrap()[0], "auto");
+    }
+
+    #[test]
+    fn renderer_takes_its_old_names_as_rust_dos_reads_them() {
+        let input = |pairs: &[(&str, &str)]| {
+            BTreeMap::from([("emulator".to_string(), pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())])
+        };
+        let renderer = |pairs: &[(&str, &str)]| -> Result<Vec<String>, String> {
+            Ok(normalize_all(&input(pairs))?.into_iter().map(|(s, k, v)| format!("{s}.{k}={v}")).collect())
+        };
+        assert_eq!(norm("emulator", "renderer", "OpenGL").unwrap(), "opengl");
+        assert!(norm("emulator", "renderer", "vulkan").is_err());
+        assert_eq!(find("emulator", "voodoo_renderer").unwrap().key, "renderer");
+        assert_eq!(find("emulator", "toadforce_renderer").unwrap().key, "renderer");
+        assert!(SETTINGS.iter().all(|d| !d.key.ends_with("_renderer")));
+
+        assert_eq!(renderer(&[("voodoo_renderer", "opengl")]).unwrap(), ["emulator.renderer=opengl"]);
+        assert_eq!(renderer(&[("toadforce_renderer", "auto")]).unwrap(), ["emulator.renderer=auto"]);
+        assert_eq!(renderer(&[("voodoo_renderer", "software"), ("toadforce_renderer", "auto")]).unwrap(), ["emulator.renderer=auto"]);
+        assert_eq!(renderer(&[("voodoo_renderer", "software"), ("toadforce_renderer", "opengl")]).unwrap(), ["emulator.renderer=auto"]);
+        assert_eq!(renderer(&[("voodoo_renderer", "SOFTWARE"), ("toadforce_renderer", "software")]).unwrap(), ["emulator.renderer=software"]);
+        assert_eq!(renderer(&[("voodoo_renderer", "opengl"), ("toadforce_renderer", "auto")]).unwrap(), ["emulator.renderer=opengl"]);
+        // The current name wins over the old ones, even a pair of two renderers.
+        assert_eq!(
+            renderer(&[("voodoo_renderer", "opengl"), ("toadforce_renderer", "software"), ("renderer", "software")]).unwrap(),
+            ["emulator.renderer=software"]
+        );
+        let err = renderer(&[("voodoo_renderer", "opengl"), ("toadforce_renderer", "software")]).unwrap_err();
+        assert!(err.contains("two renderers"), "{err}");
+        assert!(renderer(&[("voodoo_renderer", "auto")]).is_err(), "voodoo_renderer never took auto");
+        assert!(renderer(&[("toadforce_renderer", "vulkan")]).is_err());
+        assert!(normalize_all(&BTreeMap::from([("sound".to_string(), BTreeMap::from([("voodoo_renderer".to_string(), "opengl".to_string())]))])).is_err());
     }
 
     #[test]

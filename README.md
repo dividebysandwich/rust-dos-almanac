@@ -60,7 +60,7 @@ Other commands: `migrate`, `set-password <user>`.
 
 | Method & path | Who | |
 |---|---|---|
-| `GET /schema` | all | Known settings, allowed values and form groups; `version` bumps when they change (2 added `win32_depth`, 3 `fps_cap`, 4 `win32_desktop`, `win32_locale`, `adlibgold`, `svga_toadforce` and `fps_cap=auto`, 5 `opl=auto`, `opl=dualopl2`, `sbtype=sbpro1` and `sbtype=gb`) |
+| `GET /schema` | all | Known settings, allowed values and form groups; `version` bumps when they change (2 added `win32_depth`, 3 `fps_cap`, 4 `win32_desktop`, `win32_locale`, `adlibgold`, `svga_toadforce` and `fps_cap=auto`, 5 `opl=auto`, `opl=dualopl2`, `sbtype=sbpro1` and `sbtype=gb`, 6 `renderer`) |
 | `GET /games?q=&platform=all\|dos\|windows&page=` | all | Search name, aliases and slug; `platform` keeps games with a version of that platform |
 | `POST /games/lookup` | all | `{"ra_md5": "…", "files": [{"name", "size", "crc32", "md5", "sha1"}]}` → matching versions with their `platform`, best first |
 | `GET /games/{slug}` | all | Game, versions, files, rating counts |
@@ -117,10 +117,6 @@ Versions take `"platform": "dos" | "win16" | "win32"` in `POST /games`
 (the built-in Windows' system locales, such as `en-US` or `ru-RU`).
 Rust-DOS's `win32_dlls*` and `win32_trace`, and a profile's `[game] windows=`
 and `[install]`, are host or launch matters and are not accepted.
-So is Rust-DOS's `renderer` (`auto`, `opengl`, `software`: what draws the
-3dfx cards and the ToadForce on the host), and the `voodoo_renderer` and
-`toadforce_renderer` it replaces; a pasted profile lists any of them as
-ignored, whichever form it uses.
 
 `emulator.fps_cap` is Rust-DOS's frame rate cap for whichever card shows the
 picture: `auto` (Rust-DOS's default: 60 for a program that doesn't wait for
@@ -130,6 +126,21 @@ timedemos report at most the cap, so `off` is a recommendation of its own. The o
 name `voodoo_fps_cap` is accepted in reports and pasted profiles and stored
 as `fps_cap`; given under both names, `fps_cap` wins. Recommendations only
 ever carry `fps_cap`.
+
+`emulator.renderer` is what draws the 3dfx cards and the ToadForce on the
+host: `auto`, `opengl` or `software` (rust-dos#2081). It replaced two
+settings, `voodoo_renderer` (`software`, `opengl`) and `toadforce_renderer`
+(`auto`, `opengl`, `software`), which reports and pasted profiles may still
+carry and which are stored as `renderer`, read as Rust-DOS reads them: one
+alone gives its value; both give `software` when both say `software`,
+`opengl` when `voodoo_renderer` is `opengl`, and `auto` otherwise;
+`voodoo_renderer=opengl` with `toadforce_renderer=software` asks for two
+renderers and is rejected, as Rust-DOS rejects it. In a report `renderer`
+wins over the old names. In a pasted profile, line order counts, as it does
+in Rust-DOS: a `renderer` line overrides the old lines before it, and an old
+line after it overrides it for its own card. Recommendations only ever carry
+`renderer`. Rust-DOS's `KEYS` doesn't have it yet; releases without it in
+`KEYS` neither send it nor apply it.
 
 Rust-DOS sends every one of its almanac keys (`KEYS` in
 `rust-dos/src/almanac.rs`) with each report, and the almanac rejects a

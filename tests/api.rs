@@ -288,7 +288,7 @@ async fn windows_flow() {
     let (_, v) = c.call(Method::PATCH, &format!("/api/v1/versions/{keen_v}"), Some(json!({"label": "1.4"})), Some(&token), "198.51.100.9", None).await;
     assert_eq!(v["platform"], "win16", "a patch without platform leaves it");
     let (_, schema) = c.get("/api/v1/schema").await;
-    assert_eq!(schema["version"], 5);
+    assert_eq!(schema["version"], 6);
     assert!(schema["settings"].as_array().unwrap().iter().any(|s| s["key"] == "win32_depth" && s["group"] == "windows"));
 }
 
@@ -330,6 +330,41 @@ async fn fps_cap_is_reported_and_recommended_under_its_new_name() {
     assert_eq!(def["options"][0], "auto");
     assert_eq!(def["options"][1], "off");
     assert!(def["options"].as_array().unwrap().contains(&json!("60")));
+}
+
+#[tokio::test]
+async fn renderer_is_reported_under_its_name_or_its_old_ones() {
+    let (c, _) = Client::new().await;
+    let (s, game) = c.post("/api/v1/games", json!({"name": "Toad Racer", "version": {"label": "1.0", "files": [{"name": "TOAD.EXE", "crc32": "5e5e5e5e"}]}}), "203.0.113.1").await;
+    assert_eq!(s, StatusCode::OK, "{game}");
+    let slug = game["slug"].as_str().unwrap().to_string();
+    let version = game["versions"][0]["id"].as_i64().unwrap();
+    let report = |emulator: Value| json!({"game": slug, "version_id": version, "rating": "green", "settings": {"emulator": emulator}});
+
+    for bad in [
+        json!({"renderer": "vulkan"}),
+        json!({"voodoo_renderer": "auto"}),
+        json!({"voodoo_renderer": "opengl", "toadforce_renderer": "software"}),
+    ] {
+        let (s, r) = c.post("/api/v1/reports", report(bad.clone()), "203.0.113.10").await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {r}");
+    }
+
+    // A report under the old names counts as renderer, read as Rust-DOS reads them.
+    let (s, r) = c.post("/api/v1/reports", report(json!({"voodoo_renderer": "opengl", "toadforce_renderer": "auto"})), "203.0.113.11").await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (s, r) = c.post("/api/v1/reports", report(json!({"renderer": "OpenGL", "voodoo_renderer": "software"})), "203.0.113.12").await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (_, config) = c.get(&format!("/api/v1/games/{slug}/config?version={version}")).await;
+    let renderer = setting(&config, "renderer");
+    assert_eq!((renderer["section"].as_str(), renderer["value"].as_str(), renderer["agree"].as_i64()), (Some("emulator"), Some("opengl"), Some(2)));
+    assert!(config["settings"].as_array().unwrap().iter().all(|s| !s["key"].as_str().unwrap().ends_with("_renderer")));
+    assert_eq!(config["ini"], "[emulator]\nrenderer=opengl\n");
+
+    let (_, schema) = c.get("/api/v1/schema").await;
+    let def = schema["settings"].as_array().unwrap().iter().find(|s| s["key"] == "renderer").unwrap().clone();
+    assert_eq!((def["section"].as_str(), def["group"].as_str()), (Some("emulator"), Some("machine")));
+    assert_eq!(def["options"], json!(["auto", "opengl", "software"]));
 }
 
 #[tokio::test]

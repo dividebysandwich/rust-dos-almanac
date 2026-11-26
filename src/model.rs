@@ -600,9 +600,17 @@ pub struct PastedConfig {
 /// Read a Rust-DOS configuration text as `PastedConfig`. Section and key
 /// names are case-insensitive, `#` and `;` start comments, and sections
 /// the almanac doesn't take (`[drives]`, `[autoexec]`, ...) are skipped.
+/// `renderer` and the old lines it replaced are read as Rust-DOS reads them
+/// (`settings_schema::renderer_of`).
 pub fn parse_config(text: &str) -> PastedConfig {
+    use crate::settings_schema::{old_renderer_value, renderer_of, renderer_old_name};
     let mut out = PastedConfig::default();
     let mut section = String::new();
+    // The last `renderer` line's value, the old lines' after it, and the
+    // line that last set each card's.
+    let mut renderer: Option<String> = None;
+    let mut old_renderer: [Option<&str>; 2] = [None, None];
+    let mut renderer_lines: [usize; 2] = [0, 0];
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
@@ -634,6 +642,28 @@ pub fn parse_config(text: &str) -> PastedConfig {
         if !crate::settings_schema::SECTIONS.contains(&section.as_str()) {
             continue;
         }
+        if let Some(which) = renderer_old_name(&section, &key) {
+            match old_renderer_value(which, value) {
+                Ok(v) => {
+                    old_renderer[which] = Some(v);
+                    renderer_lines[which] = n + 1;
+                }
+                Err(e) => out.problems.push(format!("line {}: {e}", n + 1)),
+            }
+            continue;
+        }
+        if section == "emulator" && key == "renderer" {
+            match crate::settings_schema::find(&section, &key).map(|d| d.normalize(value)) {
+                Some(Ok(v)) => {
+                    renderer = Some(v);
+                    old_renderer = [None, None];
+                    renderer_lines = [n + 1, n + 1];
+                }
+                Some(Err(e)) => out.problems.push(format!("line {}: {e}", n + 1)),
+                None => {}
+            }
+            continue;
+        }
         let Some(def) = crate::settings_schema::find(&section, &key) else {
             out.ignored.push(format!("{section}.{key}"));
             continue;
@@ -654,6 +684,14 @@ pub fn parse_config(text: &str) -> PastedConfig {
                 out.settings.push((def.section.to_string(), def.key.to_string(), v));
             }
             Err(e) => out.problems.push(format!("line {}: {e}", n + 1)),
+        }
+    }
+    match renderer_of(renderer.as_deref(), old_renderer[0], old_renderer[1]) {
+        Ok(Some(v)) => out.settings.push(("emulator".into(), "renderer".into(), v.into())),
+        Ok(None) => {}
+        Err(e) => {
+            let (a, b) = (renderer_lines[0].min(renderer_lines[1]), renderer_lines[0].max(renderer_lines[1]));
+            out.problems.push(format!("lines {a} and {b} {e}"));
         }
     }
     out.settings.sort_by_key(|(s, k, _)| crate::settings_schema::order(s, k));
@@ -835,29 +873,52 @@ KEEN4E
         assert_eq!(p.problems.len(), 1);
     }
 
-    /// Rust-DOS's `renderer` (rust-dos#2081) and the `voodoo_renderer` and
-    /// `toadforce_renderer` it replaces choose what draws on the host, which
-    /// the almanac doesn't take: a profile with any of them, old or new, even
-    /// the pair Rust-DOS now refuses, pastes its other settings and lists
-    /// them as ignored.
+    /// `renderer` (rust-dos#2081), and the `voodoo_renderer` and
+    /// `toadforce_renderer` it replaced, read as Rust-DOS reads one file.
     #[test]
-    fn pasted_renderer_lines_old_and_new_are_ignored() {
-        for lines in [
-            "renderer=opengl\n",
-            "voodoo_renderer=software\ntoadforce_renderer=auto\n",
-            "voodoo_renderer=opengl\ntoadforce_renderer=software\n",
-            "voodoo_renderer=opengl\nrenderer=software\n",
-        ] {
+    fn a_pasted_renderer_old_or_new_is_taken_as_rust_dos_reads_it() {
+        let renderer = |lines: &str| {
             let p = parse_config(&format!("[emulator]\nmachine=svga_toadforce\n{lines}voodoo=true\n"));
-            let settings: Vec<String> = p.settings.iter().map(|(s, k, v)| format!("{s}.{k}={v}")).collect();
-            assert_eq!(settings, ["emulator.machine=svga_toadforce", "emulator.voodoo=true"], "{lines}");
-            let expected: Vec<String> = lines.lines().map(|l| format!("emulator.{}", l.split_once('=').unwrap().0)).collect();
-            assert_eq!(p.ignored, expected, "{lines}");
-            assert!(p.problems.is_empty(), "{lines}: {:?}", p.problems);
+            assert!(p.ignored.is_empty(), "{lines}: {:?}", p.ignored);
+            let value = p.settings.iter().find(|(s, k, _)| s == "emulator" && k == "renderer").map(|(_, _, v)| v.clone());
+            (value, p.problems)
+        };
+        let ok = |lines: &str, want: &str| assert_eq!(renderer(lines), (Some(want.to_string()), vec![]), "{lines}");
+        ok("renderer=OpenGL\n", "opengl");
+        ok("renderer=auto\n", "auto");
+        // One old line gives its value.
+        ok("voodoo_renderer=software\n", "software");
+        ok("voodoo_renderer=opengl\n", "opengl");
+        ok("toadforce_renderer=auto\n", "auto");
+        ok("toadforce_renderer=opengl\n", "opengl");
+        // Both, as an earlier settings window wrote them.
+        ok("voodoo_renderer=software\ntoadforce_renderer=software\n", "software");
+        ok("voodoo_renderer=software\ntoadforce_renderer=auto\n", "auto");
+        ok("voodoo_renderer=software\ntoadforce_renderer=opengl\n", "auto");
+        ok("voodoo_renderer=opengl\ntoadforce_renderer=auto\n", "opengl");
+        ok("voodoo_renderer=opengl\ntoadforce_renderer=opengl\n", "opengl");
+        // A renderer line takes back the old lines before it; old lines after it go over it for their card.
+        ok("voodoo_renderer=opengl\ntoadforce_renderer=software\nrenderer=software\n", "software");
+        ok("renderer=opengl\nvoodoo_renderer=software\n", "auto");
+        ok("renderer=opengl\ntoadforce_renderer=auto\n", "opengl");
+        ok("renderer=auto\nvoodoo_renderer=opengl\n", "opengl");
+        // Two renderers, which Rust-DOS refuses.
+        for lines in [
+            "voodoo_renderer=opengl\ntoadforce_renderer=software\n",
+            "toadforce_renderer=software\nvoodoo_renderer=opengl\n",
+            "renderer=opengl\ntoadforce_renderer=software\n",
+            "renderer=software\nvoodoo_renderer=opengl\n",
+        ] {
+            let (value, problems) = renderer(lines);
+            assert_eq!(value, None, "{lines}");
+            assert_eq!(problems.len(), 1, "{lines}");
+            assert!(problems[0].starts_with("lines 3 and 4 ask for two renderers"), "{}", problems[0]);
         }
-        for key in ["renderer", "voodoo_renderer", "toadforce_renderer"] {
-            assert!(crate::settings_schema::find("emulator", key).is_none(), "{key}");
-        }
+        // Values the old settings didn't take.
+        let (value, problems) = renderer("voodoo_renderer=auto\n");
+        assert_eq!((value, problems.len()), (None, 1));
+        let (value, problems) = renderer("renderer=vulkan\nvoodoo_renderer=opengl\n");
+        assert_eq!((value.as_deref(), problems.len()), (Some("opengl"), 1));
     }
 
     #[test]

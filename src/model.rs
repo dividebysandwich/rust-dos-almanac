@@ -835,6 +835,31 @@ KEEN4E
         assert_eq!(p.problems.len(), 1);
     }
 
+    /// Rust-DOS's `renderer` (rust-dos#2081) and the `voodoo_renderer` and
+    /// `toadforce_renderer` it replaces choose what draws on the host, which
+    /// the almanac doesn't take: a profile with any of them, old or new, even
+    /// the pair Rust-DOS now refuses, pastes its other settings and lists
+    /// them as ignored.
+    #[test]
+    fn pasted_renderer_lines_old_and_new_are_ignored() {
+        for lines in [
+            "renderer=opengl\n",
+            "voodoo_renderer=software\ntoadforce_renderer=auto\n",
+            "voodoo_renderer=opengl\ntoadforce_renderer=software\n",
+            "voodoo_renderer=opengl\nrenderer=software\n",
+        ] {
+            let p = parse_config(&format!("[emulator]\nmachine=svga_toadforce\n{lines}voodoo=true\n"));
+            let settings: Vec<String> = p.settings.iter().map(|(s, k, v)| format!("{s}.{k}={v}")).collect();
+            assert_eq!(settings, ["emulator.machine=svga_toadforce", "emulator.voodoo=true"], "{lines}");
+            let expected: Vec<String> = lines.lines().map(|l| format!("emulator.{}", l.split_once('=').unwrap().0)).collect();
+            assert_eq!(p.ignored, expected, "{lines}");
+            assert!(p.problems.is_empty(), "{lines}: {:?}", p.problems);
+        }
+        for key in ["renderer", "voodoo_renderer", "toadforce_renderer"] {
+            assert!(crate::settings_schema::find("emulator", key).is_none(), "{key}");
+        }
+    }
+
     #[test]
     fn keys_are_long_and_plain() {
         assert!(valid_key("0f8fad5b-d9cb-469f-a165-70867728950e"));

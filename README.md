@@ -117,6 +117,10 @@ Versions take `"platform": "dos" | "win16" | "win32"` in `POST /games`
 (the built-in Windows' system locales, such as `en-US` or `ru-RU`).
 Rust-DOS's `win32_dlls*` and `win32_trace`, and a profile's `[game] windows=`
 and `[install]`, are host or launch matters and are not accepted.
+So is Rust-DOS's `renderer` (`auto`, `opengl`, `software`: what draws the
+3dfx cards and the ToadForce on the host), and the `voodoo_renderer` and
+`toadforce_renderer` it replaces; a pasted profile lists any of them as
+ignored, whichever form it uses.
 
 `emulator.fps_cap` is Rust-DOS's frame rate cap for whichever card shows the
 picture: `auto` (Rust-DOS's default: 60 for a program that doesn't wait for
